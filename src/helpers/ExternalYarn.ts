@@ -177,7 +177,7 @@ export class ExecutableYarn {
 
     public async run() {
         this.childProcess = spawn(await this.getYarnBin(), this.buildArguments(), {
-            cwd: process.cwd(),
+            cwd: this.options.cwd ?? process.cwd(),
             env: process.env
         });
 

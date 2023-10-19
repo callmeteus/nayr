@@ -10,6 +10,7 @@ import { logger } from "./Logger";
 interface ILinkOptions {
     package?: string;
     global?: boolean;
+    force?: boolean;
 }
 
 interface IConfig {
@@ -41,6 +42,16 @@ export class App {
 
     constructor() {
         this.setup();
+    }
+
+    /**
+     * Exits the application and displays an error.
+     * @param message The error message.
+     * @param params Any params to be passed to the console.error message.
+     */
+    public exitWithError(message: string, ...params: any[]) {
+        logger.error(message, ...params);
+        process.exit(1);
     }
 
     /**
@@ -120,6 +131,75 @@ export class App {
             // Save the configuration files
             this.save(link.global ? "global" : "local");
         }
+    }
+
+    /**
+     * Deletes a link for a given package.
+     * @param unlink The link options.
+     */
+    public async unlink(unlink: ILinkOptions) {
+        // If no package was given
+        if (!unlink.package) {
+            // If has no package.json
+            if (!this.packageJson) {
+                throw new Error("No package name was given and also a package.json wasn't found.");
+            }
+    
+            // Create a new link for it
+            const obj = this[unlink.global ? "globalConfig" : "localConfig"];
+
+            // Create a link for it
+            obj.links[this.packageJson.name] = process.cwd();
+
+            // Save the configuration files
+            this.save(unlink.global ? "global" : "local");
+
+            return;
+        }
+
+        // If it's a global unlink
+        if (unlink.global) {
+            // Try finding the original link folder
+            const linkFolder = await this.yarn.getGlobalLinkSymlinkPath(unlink.package);
+
+            // If no folder was found
+            if (!linkFolder) {
+                // Welp, there's nothing to do here
+                return this.exitWithError("Unable to determine the location for \"%s\"", unlink.package);
+            }
+
+            logger.info("the folder for %s is %s", unlink.package, linkFolder);
+
+            try {
+                // If the symlink still exists
+                if (fs.lstatSync(linkFolder).isSymbolicLink()) {
+                    // If it's a broken symlink
+                    if (!fs.existsSync(linkFolder)) {
+                        // If it's not forcing a deletion
+                        if (!unlink.force) {
+                            return this.exitWithError("The given symlink doesn't resolve to anywhere. Use --force to abruptly delete the symlink.");
+                        }
+
+                        // Delete the symlink
+                        await fs.promises.unlink(linkFolder);
+                    } else {
+                        // Just all unlink at the folder
+                        await this.yarn.execYarn({
+                            cmd: "unlink",
+                            cwd: path.resolve(linkFolder)
+                        });
+                    }
+                } else {
+                    throw new Error("Invalid symlink found.");
+                }
+            } catch(e) {
+                console.error(e);
+
+                return this.exitWithError("There's no symlink for \"%s\"", unlink.package);
+            }
+        }
+
+        logger.info("the symlink for \"%s\" was sucessfully removed.", unlink.package);
     }
 
     /**
@@ -218,9 +298,7 @@ export class App {
             if (e.message.includes("No registered package")) {
                 logger.warn("no registered package \"%s\" was found", packageName);
             } else {
-                logger.info("failed to link \"%s\": %O", packageName, e);
-
-                process.exit(1);
+                return this.exitWithError("failed to link \"%s\": %O", packageName, e);
             }
         }
 

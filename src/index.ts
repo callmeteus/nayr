@@ -38,6 +38,12 @@ async function perform() {
                     describe: "If it's a global operation",
                     requiresArg: false
                 })
+                .option("force", {
+                    alias: "f",
+                    type: "boolean",
+                    describe: "Will force deleting the symlink from the original package manager folder.",
+                    requiresArg: false
+                })
 
         .command("*", "Will try to link all linked packages", (yargs) =>
             yargs
@@ -74,6 +80,10 @@ async function perform() {
 
         case "link":
             app.link(args as any);
+        break;
+
+        case "unlink":
+            app.unlink(args as any);
         break;
     }
 }

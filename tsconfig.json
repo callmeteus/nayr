@@ -2,7 +2,7 @@
     "compilerOptions": {
         "target": "es2015",
         "module": "Node16",
-        "moduleResolution": "node",
+        "moduleResolution": "NodeNext",
         "allowJs": false,
         "jsx": "preserve",
         "resolveJsonModule": true,

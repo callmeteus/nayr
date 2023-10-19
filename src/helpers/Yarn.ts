@@ -10,6 +10,7 @@ import { logger } from "../core/Logger";
 export interface IYarnExecOptions {
     cmd: string;
     args?: string | string[];
+    cwd?: string;
     json?: boolean;
     interactive?: boolean;
     progress?: boolean;
@@ -69,6 +70,24 @@ export class Yarn {
         const response = await axios.get(url.toString());
 
         return response.data;
+    }
+
+    /**
+     * Retrieves the symlink location for a given package name.
+     * @param pkgName The package name.
+     * @returns 
+     */
+    public async getGlobalLinkSymlinkPath(pkgName: string) {
+        return path.resolve(await this.getGlobalLinksPath(), pkgName);
+    }
+
+    /**
+     * Retrieves the symlink location for a given package name.
+     * @param pkgName The package name.
+     * @returns 
+     */
+    public async resolveGlobalLinkPath(pkgName: string) {
+        return path.resolve(await this.getGlobalLinksPath(), pkgName);
     }
 
     /**
@@ -224,7 +243,7 @@ export class Yarn {
      * Retrieves the yarn links folder location.
      * @returns 
      */
-    public async getLinksPath() {
+    public async getGlobalLinksPath() {
         const binFolder = await this.execYarn<string>({
             cmd: "global",
             args: ["bin"],
@@ -240,7 +259,7 @@ export class Yarn {
      * Retrieves all globally linked packages
      */
     public async getGloballyLinkedPackages() {
-        const linksPath = await this.getLinksPath();
+        const linksPath = await this.getGlobalLinksPath();
 
         const rootItems = await fs.promises.readdir(linksPath, {
             recursive: false
@@ -279,7 +298,7 @@ export class Yarn {
      * @param options All options to be passed to the fork executor.
      * @returns 
      */
-    private async execYarn<
+    public async execYarn<
         TResult,
         TOptions extends IYarnExecOptions = IYarnExecOptions
     >(options: TOptions): Promise<TResult> {
