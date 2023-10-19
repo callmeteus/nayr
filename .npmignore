@@ -3,3 +3,7 @@ node_modules/
 
 *.yml
 *.env
+
+tsconfig.json
+*-error.log
+*.log
