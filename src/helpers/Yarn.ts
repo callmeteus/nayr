@@ -4,7 +4,7 @@ import { execSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 
-import { ExecutableYarn, execYarn as invokeYarn } from "./ExternalYarn";
+import { ExternalYarn, execYarn as invokeYarn } from "./ExternalYarn";
 import { logger } from "../core/Logger";
 
 export interface IYarnExecOptions {
@@ -44,18 +44,14 @@ export class Yarn {
     /**
      * The resolved node_modules directory.
      */
-    public nodeModulesDir = path.resolve(process.cwd(), "node_modules");
-
-    constructor() {
-        
-    }
+    public static nodeModulesDir = path.resolve(process.cwd(), "node_modules");
 
     /**
      * Safely extracts the package name from patterns like `@package/name@1.0.0`.
      * @param pkgNameWithVersion The package name with the package version.
      * @returns 
      */
-    private safeExtractPackageName(pkgNameWithVersion: string) {
+    private static safeExtractPackageName(pkgNameWithVersion: string) {
         const lastIndex = pkgNameWithVersion.lastIndexOf("@");        
         return pkgNameWithVersion.slice(0, lastIndex);
     }
@@ -65,8 +61,8 @@ export class Yarn {
      * @param pkgName The package name.
      * @returns
      */
-    public async getPackageInfo(pkgName: string) {
-        const url = new URL("/" + pkgName, ExecutableYarn.getExternalRegistryURL() ?? "https://replica.npmjs.com");
+    public static async getPackageInfo(pkgName: string) {
+        const url = new URL("/" + pkgName, ExternalYarn.getExternalRegistryURL() ?? "https://replica.npmjs.com");
         const response = await axios.get(url.toString());
 
         return response.data;
@@ -77,7 +73,7 @@ export class Yarn {
      * @param pkgName The package name.
      * @returns 
      */
-    public async getGlobalLinkSymlinkPath(pkgName: string) {
+    public static async getGlobalLinkSymlinkPath(pkgName: string) {
         return path.resolve(await this.getGlobalLinksPath(), pkgName);
     }
 
@@ -86,7 +82,7 @@ export class Yarn {
      * @param pkgName The package name.
      * @returns 
      */
-    public async resolveGlobalLinkPath(pkgName: string) {
+    public static async resolveGlobalLinkPath(pkgName: string) {
         return path.resolve(await this.getGlobalLinksPath(), pkgName);
     }
 
@@ -94,7 +90,7 @@ export class Yarn {
      * Retrieves the project dependencies.
      * @returns
      */
-    public getDependencies() {
+    public static getDependencies() {
         return Yarn.execAndGetStdout("npm pkg get dependencies", true) as object;
     }
 
@@ -102,7 +98,7 @@ export class Yarn {
      * Retrieves the project dev dependencies.
      * @returns 
      */
-    public getDevDependencies() {
+    public static getDevDependencies() {
         return Yarn.execAndGetStdout("npm pkg get devDependencies", true) as object;
     }
 
@@ -110,7 +106,7 @@ export class Yarn {
      * Retrieves all kinds of project dependencies.
      * @returns 
      */
-    public getAllDependencies() {
+    public static getAllDependencies() {
         // Join the dev with the normal deps
         return {
             ...this.getDependencies(),
@@ -123,7 +119,7 @@ export class Yarn {
      * @param pkgName The package name.
      * @returns 
      */
-    private getPkgPath(pkgName: string) {
+    private static getPkgPath(pkgName: string) {
         return path.resolve(process.cwd(), "node_modules", pkgName);
     }
 
@@ -132,7 +128,7 @@ export class Yarn {
      * @param pkgName The package name.
      * @returns
      */
-    public isInstalled(pkgName: string) {
+    public static isInstalled(pkgName: string) {
         const pkgPath = this.getPkgPath(pkgName);
 
         logger.silly("isInstalled %s @ %s", pkgName, pkgPath);
@@ -145,7 +141,7 @@ export class Yarn {
      * @param pkgName The package name.
      * @returns 
      */
-    public isLinked(pkgName: string) {
+    public static isLinked(pkgName: string) {
         return this.isInstalled(pkgName) && fs.lstatSync(this.getPkgPath(pkgName)).isSymbolicLink();
     }
 
@@ -154,7 +150,7 @@ export class Yarn {
      * @param pkgName The package name.
      * @returns
      */
-    public async getPackageVersion(pkgName: string) {
+    public static async getPackageVersion(pkgName: string) {
         const why = await this.execYarn<{
             type: "tree";
             data: {
@@ -190,7 +186,7 @@ export class Yarn {
      * @param pkgName The package name.
      * @returns 
      */
-    public async determineLatestPackageVersion(pkgName: string) {
+    public static async determineLatestPackageVersion(pkgName: string) {
         return (await this.getPackageInfo(pkgName))["dist-tags"].latest;
     }
 
@@ -199,7 +195,7 @@ export class Yarn {
      * @param pkgName The package name.
      * @returns
      */
-    public install(pkgName?: string) {
+    public static install(pkgName?: string) {
         return this.execYarn({
             cmd: "add",
             args: [pkgName],
@@ -214,7 +210,7 @@ export class Yarn {
      * @param pkgName The package name.
      * @returns
      */
-    public link(pkgName: string) {
+    public static link(pkgName: string) {
         return this.execYarn({
             cmd: "link",
             args: [pkgName],
@@ -229,7 +225,7 @@ export class Yarn {
      * @param pkgName The package name.
      * @returns
      */
-    public upgrade(pkgName?: string) {
+    public static upgrade(pkgName?: string) {
         return this.execYarn({
             cmd: "upgrade",
             args: [pkgName],
@@ -243,7 +239,7 @@ export class Yarn {
      * Retrieves the yarn links folder location.
      * @returns 
      */
-    public async getGlobalLinksPath() {
+    public static async getGlobalLinksPath() {
         const binFolder = await this.execYarn<string>({
             cmd: "global",
             args: ["bin"],
@@ -258,7 +254,7 @@ export class Yarn {
     /**
      * Retrieves all globally linked packages
      */
-    public async getGloballyLinkedPackages(opts?: {
+    public static async getGloballyLinkedPackages(opts?: {
         includeBroken?: boolean;
     }) {
         const linksPath = await this.getGlobalLinksPath();
@@ -308,7 +304,7 @@ export class Yarn {
      * @param options All options to be passed to the fork executor.
      * @returns 
      */
-    public async execYarn<
+    public static async execYarn<
         TResult,
         TOptions extends IYarnExecOptions = IYarnExecOptions
     >(options: TOptions): Promise<TResult> {

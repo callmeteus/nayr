@@ -31,7 +31,11 @@
   },
   "devDependencies": {
     "@types/node": "^20.8.7",
+    "@types/which": "^3.0.1",
     "@types/yargs": "^17.0.29",
     "typescript": "^5.2.2"
+  },
+  "resolutions": {
+    "wrap-ansi": "7.0.0"
   }
 }

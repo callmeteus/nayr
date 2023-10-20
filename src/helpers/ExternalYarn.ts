@@ -6,6 +6,7 @@ import which from "which";
 
 import * as fs from "fs";
 import * as path from "path";
+import { logger } from "../core/Logger";
 
 interface IYarnAct<TType extends string, TData> {
     type: TType;
@@ -45,8 +46,52 @@ type IInfoAct = IYarnAct<"info", string>;
 
 type TActivityType = IStepAct | IActivityTickAct | IInfoAct | IProgressStartAct | IProgressTickAct | IProgressEndAct | ISuccessAct;
 
-export class ExecutableYarn {
+export class ExternalYarn {
+    private static binPath: string;
+    private static cliPath: string;
     private static resolvedExternalRegistryUrl: string;
+
+    private static async getYarnBinPath() {
+        if (!this.binPath) {
+            try {
+                // Try with 
+                const possiblePaths = await which("yarn", {
+                    all: true
+                });
+
+                this.binPath = possiblePaths.find((p) => !p.includes("\\Temp"));
+            } catch(e) {
+                // Ignore any errors
+                throw new Error("yarn isn't installed or couldn't been found");
+            }
+        }
+
+        return this.binPath;
+    }
+
+    /**
+     * Retrieves the yarn CLI location and validates its existance.
+     * @returns
+     */
+    public static async getYarnCliPath() {
+        if (!this.cliPath) {
+            const yarnBin = await this.getYarnBinPath();
+            const yarnCli = path.resolve(
+                yarnBin.replace(/yarn(\.(cmd|sh))?$/i, ""),
+                "node_modules/yarn/lib/cli.js"
+            );
+
+            logger.debug("possible yarn CLI path is %s", yarnCli);
+
+            if (!fs.existsSync(yarnCli)) {
+                throw new Error("Unable to locate yarn lib folder.");
+            }
+
+            this.cliPath = yarnCli;
+        }
+
+        return this.cliPath;
+    }
 
     public static getExternalRegistryURL() {
         if (this.resolvedExternalRegistryUrl === undefined) {
@@ -71,8 +116,6 @@ export class ExecutableYarn {
 
     public cliBars: Record<string, cliProgress.Bar> = {};
 
-    private bin: string;
-
     constructor(
         protected options: IYarnExecOptions
     ) {
@@ -81,20 +124,6 @@ export class ExecutableYarn {
                 emptyOnZero: true
             });
         }
-    }
-
-    private async getYarnBin() {
-        if (!this.bin) {
-            try {
-                // Try with 
-                this.bin = await which("yarn");
-            } catch(e) {
-                // Ignore any errors
-                throw new Error("yarn isn't installed or couldn't been found");
-            }
-        }
-
-        return this.bin;
     }
 
     /**
@@ -106,8 +135,8 @@ export class ExecutableYarn {
             this.options.cmd
         ];
 
-        if (ExecutableYarn.getExternalRegistryURL()) {
-            args.push("--registry=" + ExecutableYarn.getExternalRegistryURL());
+        if (ExternalYarn.getExternalRegistryURL()) {
+            args.push("--registry=" + ExternalYarn.getExternalRegistryURL());
         }
     
         if (this.options.args) {
@@ -176,7 +205,7 @@ export class ExecutableYarn {
     }
 
     public async run() {
-        this.childProcess = spawn(await this.getYarnBin(), this.buildArguments(), {
+        this.childProcess = spawn(await ExternalYarn.getYarnBinPath(), this.buildArguments(), {
             cwd: this.options.cwd ?? process.cwd(),
             env: process.env
         });
@@ -249,7 +278,7 @@ export const execYarn = async <
     TResult extends object | string,
     TOptions extends IYarnExecOptions = IYarnExecOptions 
 >(options: TOptions): Promise<TResult> => {
-    const yarn = new ExecutableYarn(options);
+    const yarn = new ExternalYarn(options);
 
     const result = await yarn.run();
 

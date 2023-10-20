@@ -1,10 +1,9 @@
 import { hideBin } from "yargs/helpers";
 import yargs from "yargs/yargs";
 
-import { App } from "./core/App";
-import { logger } from "./core/Logger";
+import { CommandProcessor } from "./core/CommandProcessor";
 
-const app = new App();
+const app = new CommandProcessor();
 
 async function perform() {
     const args = await yargs(
@@ -71,6 +70,14 @@ async function perform() {
                 })
         })
 
+        .command("global-hook [action]", "Installs a global hook into yarn / npm. It will act like a `postinstall` lifecycle event.", (yargs) => {
+            return yargs
+                .positional("action", {
+                    type: "string",
+                    choices: ["install", "uninstall"]
+                });
+        })
+
         .command("*", "Will try to link all linked packages", (yargs) => {
             return yargs
                 .option("ignoreGlobalLinks", {
@@ -89,38 +96,24 @@ async function perform() {
             requiresArg: false
         })
 
-        .global(["verbose"])
+        .option("headless", {
+            type: "boolean",
+            describe: "Enables headless mode",
+            default: false
+        })
+
+        .global(["verbose", "headless"])
 
         .parse();
 
     const cmd = args._[0];
 
-    if (args.verbose) {
-        logger.level = "silly";
-    }
+    app.setOptions({
+        verbose: args.verbose,
+        headless: args.headless
+    });
 
-    switch(cmd) {
-        case undefined:
-            app.setConfig(args as any);
-            app.performLinks();
-        break;
-
-        case "link":
-            app.link(args as any);
-        break;
-
-        case "mklink":
-            app.mklink(args as any);
-        break;
-
-        case "unlink":
-            app.unlink(args as any);
-        break;
-
-        case "reset-global-links":
-            app.resetGlobalLinks(args as any);
-        break;
-    }
+    app.process(cmd as string, args);
 }
 
 perform();
