@@ -1,17 +1,17 @@
 {
-  "name": "bunda",
-  "description": "Bunda allows you to automatically generate links for your yarn packages. It's commonly used as a postinstall script.",
-  "version": "1.0.3",
+  "name": "nayr",
+  "description": "Nayr allows you to automatically generate links for your yarn packages.",
+  "version": "1.0.100000000",
   "main": "dist/index.js",
   "license": "MIT",
-  "repository": "https://github.com/callmeteus/bunda",
+  "repository": "https://github.com/callmeteus/nayr",
   "author": "Gio <gio@techtail.net>",
   "files": [
     "./dist",
     "./bin"
   ],
   "bin": {
-    "bunda": "./bin/bunda.js"
+    "nayr": "./bin/nayr.js"
   },
   "scripts": {
     "start": "node dist/index.js",
@@ -21,6 +21,7 @@
   "dependencies": {
     "axios": "^1.5.1",
     "cli-progress": "^3.12.0",
+    "colors": "^1.4.0",
     "deepmerge": "^4.3.1",
     "which": "^4.0.0",
     "winston": "^3.11.0",

@@ -47,11 +47,12 @@ async function perform() {
 
         .command("*", "Will try to link all linked packages", (yargs) =>
             yargs
-                .option("includeGlobalLinks", {
-                    alias: ["include-global", "include-global-links", "igl"],
+                .option("ignoreGlobalLinks", {
+                    alias: ["ignore-global", "ignore-global-links", "igl"],
                     type: "boolean",
-                    describe: "If can include all global links",
-                    requiresArg: false
+                    describe: "If can ignore all global links",
+                    requiresArg: false,
+                    default: false
                 })
         )
 

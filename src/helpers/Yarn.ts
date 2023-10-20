@@ -146,7 +146,7 @@ export class Yarn {
      * @returns 
      */
     public isLinked(pkgName: string) {
-        return this.isInstalled(pkgName) && fs.lstatSync(this.getPkgPath(pkgName)).isSymbolicLink()
+        return this.isInstalled(pkgName) && fs.lstatSync(this.getPkgPath(pkgName)).isSymbolicLink();
     }
 
     /**

@@ -7,6 +7,10 @@ import deepmerge from "deepmerge";
 import { Yarn } from "../helpers/Yarn";
 import { logger } from "./Logger";
 
+import colors from "colors";
+
+const appPackageJson = require("../../package.json");
+
 interface ILinkOptions {
     package?: string;
     global?: boolean;
@@ -16,7 +20,7 @@ interface ILinkOptions {
 interface IConfig {
     links?: Record<string, string | boolean>;
     
-    includeGlobalLinks?: boolean;
+    ignoreGlobalLinks?: boolean;
 
     rules?: ({
         includes: string;
@@ -36,12 +40,18 @@ export class App {
         devDependencies?: Record<string, string>;
         localDependencies?: Record<string, string>;
         peerDependencies?: Record<string, string>;
+        optionalDependencies?: Record<string, string>;
     };
 
     private yarn = new Yarn();
+    private version: string;
 
     constructor() {
         this.setup();
+
+        this.version = appPackageJson.version;
+
+        console.log(colors.bold("nayr v%s"), this.version);
     }
 
     /**
@@ -62,36 +72,12 @@ export class App {
         this.config = deepmerge(this.config, config);
     }
 
-    private setup() {
-        if (fs.existsSync(this.getGlobalConfigFilename())) {
-            this.globalConfig = yaml.parse(
-                fs.readFileSync(this.getGlobalConfigFilename(), "utf-8")
-            );
-        }
-
-        if (fs.existsSync(this.getLocalConfigFilename())) {
-            this.localConfig = yaml.parse(
-                fs.readFileSync(this.getLocalConfigFilename(), "utf-8")
-            );
-        }
-
-        this.config = deepmerge(this.globalConfig, this.localConfig);
-
-        // Try finding a package.json at the root directory
-        const packageJsonFile = path.resolve(process.cwd(), "package.json");
-
-        // If no package.json exists
-        if (fs.existsSync(packageJsonFile)) {
-            this.packageJson = require(packageJsonFile);
-        }
-    }
-
     /**
      * Retrieves the global configuration filename.
      * @returns 
      */
     public getGlobalConfigFilename() {
-        return path.resolve(os.homedir(), ".autolinker", "config.yml");
+        return path.resolve(os.homedir(), ".nayr", "config.yml");
     }
 
     /**
@@ -99,7 +85,7 @@ export class App {
      * @returns 
      */
     public getGlobalLinkCacheFilename() {
-        return path.resolve(os.homedir(), ".autolinker", "cache.yml");
+        return path.resolve(os.homedir(), ".nayr", "cache.yml");
     }
 
     /**
@@ -107,7 +93,7 @@ export class App {
      * @returns 
      */
     public getLocalConfigFilename() {
-        return path.resolve(process.cwd(), ".autolinker");
+        return path.resolve(process.cwd(), ".nayr");
     }
 
     /**
@@ -228,11 +214,39 @@ export class App {
             }
         }
 
-        if (this.config.includeGlobalLinks) {
+        // If isn't ignoring global links
+        if (!this.config.ignoreGlobalLinks) {
             this.processGlobalLinks();
         }
 
         logger.info("all packages were linked sucessfully");
+    }
+
+    /**
+     * Sets up the application.
+     */
+    private setup() {
+        if (fs.existsSync(this.getGlobalConfigFilename())) {
+            this.globalConfig = yaml.parse(
+                fs.readFileSync(this.getGlobalConfigFilename(), "utf-8")
+            );
+        }
+
+        if (fs.existsSync(this.getLocalConfigFilename())) {
+            this.localConfig = yaml.parse(
+                fs.readFileSync(this.getLocalConfigFilename(), "utf-8")
+            );
+        }
+
+        this.config = deepmerge(this.globalConfig, this.localConfig);
+
+        // Try finding a package.json at the root directory
+        const packageJsonFile = path.resolve(process.cwd(), "package.json");
+
+        // If no package.json exists
+        if (fs.existsSync(packageJsonFile)) {
+            this.packageJson = require(packageJsonFile);
+        }
     }
 
     /**
@@ -244,7 +258,8 @@ export class App {
             ...this.packageJson.dependencies ?? {},
             ...this.packageJson.devDependencies ?? {},
             ...this.packageJson.localDependencies ?? {},
-            ...this.packageJson.peerDependencies ?? {}
+            ...this.packageJson.peerDependencies ?? {},
+            ...this.packageJson.optionalDependencies ?? {}
         };
     }
 
