@@ -14,7 +14,7 @@ npm
 npm -G install nayr
 ```
 
-Bunda is friends with the `postinstall` lifecycle hook.
+Nayr is friends with the `postinstall` lifecycle hook.
 You can hook it into your projects to automatically generate links for you:
 
 ```json
