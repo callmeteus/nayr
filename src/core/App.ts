@@ -223,6 +223,27 @@ export class App {
     }
 
     /**
+     * Resets global links.
+     * @param opts Any options to be passed to the resetter.
+     */
+    public async resetGlobalLinks(opts?: {
+        /**
+         * Will only delete broken symlinks.
+         */
+        onlyBroken?: boolean;
+    }) {
+        // Retrieve all linked packages
+        for(const link of await this.yarn.getGloballyLinkedPackages({
+            includeBroken: opts?.onlyBroken
+        })) {
+            // Unlink it
+            fs.unlinkSync(await this.yarn.getGlobalLinkSymlinkPath(link));
+
+            logger.info("unlinked \"%s\"", link);
+        }
+    }
+
+    /**
      * Sets up the application.
      */
     private setup() {

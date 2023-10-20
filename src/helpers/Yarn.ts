@@ -258,7 +258,9 @@ export class Yarn {
     /**
      * Retrieves all globally linked packages
      */
-    public async getGloballyLinkedPackages() {
+    public async getGloballyLinkedPackages(opts?: {
+        includeBroken?: boolean;
+    }) {
         const linksPath = await this.getGlobalLinksPath();
 
         const rootItems = await fs.promises.readdir(linksPath, {
@@ -287,7 +289,13 @@ export class Yarn {
             const fullPath = path.resolve(linksPath, item);
 
             // Ignore if it it's a broken link or isn't a folder
-            if (!fs.existsSync(fullPath) || !(await fs.promises.stat(fullPath)).isDirectory()) {
+            if (
+                (
+                    opts?.includeBroken !== true &&
+                    !fs.existsSync(fullPath)
+                ) ||
+                !(await fs.promises.stat(fullPath)).isDirectory()
+            ) {
                 items.splice(items.indexOf(item), 1);
             }
         }

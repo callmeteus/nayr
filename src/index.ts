@@ -45,6 +45,15 @@ async function perform() {
                     requiresArg: false
                 })
 
+        .command("reset-global-links", "Will delete all existing global links.\nWARNING: this may break entire applications if used incorrectly.", (yargs) => 
+            yargs
+                .option("onlyBroken", {
+                    type: "boolean",
+                    alias: ["b", "only-broken"],
+                    default: false,
+                    describe: "Will delete only broken symlinks."
+                }))
+
         .command("*", "Will try to link all linked packages", (yargs) =>
             yargs
                 .option("ignoreGlobalLinks", {
@@ -85,6 +94,10 @@ async function perform() {
 
         case "unlink":
             app.unlink(args as any);
+        break;
+
+        case "reset-global-links":
+            app.resetGlobalLinks(args as any);
         break;
     }
 }
