@@ -8,6 +8,7 @@ import { Yarn } from "../helpers/Yarn";
 import { logger } from "./Logger";
 
 import colors from "colors";
+import * as glob from "glob";
 
 const appPackageJson = require("../../package.json");
 
@@ -116,6 +117,47 @@ export class App {
 
             // Save the configuration files
             this.save(link.global ? "global" : "local");
+        }
+    }
+
+    /**
+     * Creates multiple links for a given pattern.
+     * @param link The link options.
+     */
+    public async mklink(link: {
+        pattern: string;
+        depth?: number;
+    }) {
+        // Remove the last slash from the pattern if has one
+        if (link.pattern.endsWith("/")) {
+            link.pattern = link.pattern.substring(0, link.pattern.length - 1);
+        }
+
+        const possibleProjects = await glob.glob(link.pattern + "/", {
+            maxDepth: link.depth,
+            follow: true,
+            absolute: true,
+            cwd: process.cwd(),
+            ignore: "node_modules/**"
+        });
+
+        for(const projectPath of possibleProjects) {
+            const packageJsonPath = path.resolve(projectPath, "package.json");
+
+            // Ignore if there's no package.json in the folder
+            if (!fs.existsSync(packageJsonPath)) {
+                continue;
+            }
+
+            const packageJson = require(packageJsonPath);
+
+            // Call a link for it
+            await this.yarn.execYarn({
+                cmd: "link",
+                cwd: projectPath
+            });
+
+            logger.info("linked package \"%s\"", packageJson.name);
         }
     }
 
