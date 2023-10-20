@@ -284,8 +284,10 @@ export class Yarn {
 
         // Iterate over all items
         for(const item of items) {
-            // Ignore if it isn't a folder
-            if (!(await fs.promises.stat(path.resolve(linksPath, item))).isDirectory()) {
+            const fullPath = path.resolve(linksPath, item);
+
+            // Ignore if it it's a broken link or isn't a folder
+            if (!fs.existsSync(fullPath) || !(await fs.promises.stat(fullPath)).isDirectory()) {
                 items.splice(items.indexOf(item), 1);
             }
         }
