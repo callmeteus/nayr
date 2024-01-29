@@ -228,6 +228,9 @@ export class ExternalYarn {
                         if (json.type === "success") {
                             // Ignore it
                         } else
+                        if (json.type === "warning") {
+                            // Ignore it
+                        } else
                         if (this.options.progress) {
                             this.processProgress(json);
                         }

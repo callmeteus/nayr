@@ -86,6 +86,13 @@ async function perform() {
                     describe: "If can ignore all global links",
                     requiresArg: false,
                     default: false
+                })
+                .option("ignoreFileLinks", {
+                    alias: ["ignore-file", "ignore-file-links", "ifl"],
+                    type: "boolean",
+                    describe: "If can ignore all \"file:\" links",
+                    requiresArg: false,
+                    default: false
                 });
         })
 

@@ -45,7 +45,10 @@ export class App {
     private localConfig: IConfig = {};
     private config: IConfig = {};
 
-    private packageJson: {
+    /**
+     * The package.json contents for the current project.
+     */
+    public packageJson: {
         name?: string;
         dependencies?: Record<string, string>;
         devDependencies?: Record<string, string>;
@@ -115,13 +118,17 @@ export class App {
     private setup() {
         this.version = appPackageJson.version;
 
+        // If there's a global file
         if (fs.existsSync(this.getGlobalConfigFilename())) {
+            // Load it
             this.globalConfig = yaml.parse(
                 fs.readFileSync(this.getGlobalConfigFilename(), "utf-8")
             );
         }
 
+        // If there's a local file
         if (fs.existsSync(this.getLocalConfigFilename())) {
+            // Load it
             this.localConfig = yaml.parse(
                 fs.readFileSync(this.getLocalConfigFilename(), "utf-8")
             );

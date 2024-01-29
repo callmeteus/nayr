@@ -210,10 +210,10 @@ export class Yarn {
      * @param pkgName The package name.
      * @returns
      */
-    public static link(pkgName: string) {
+    public static link(pkgName?: string) {
         return this.execYarn({
             cmd: "link",
-            args: [pkgName],
+            args: pkgName ? [pkgName] : [],
             interactive: false,
             progress: true,
             json: true
