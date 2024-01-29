@@ -16,6 +16,8 @@ export interface IYarnExecOptions {
     progress?: boolean;
 }
 
+type YarnCommandOptions = Omit<IYarnExecOptions, "cmd" | "args" | "interactive" | "progress" | "json">;
+
 export class Yarn {
     /**
      * Executes a command synchronously and retrieves its stdout.
@@ -146,6 +148,17 @@ export class Yarn {
     }
 
     /**
+     * Determines if a given package has a link created to it.
+     * @param pkgPath The package name.
+     * @returns
+     */
+    public static async packageHasLink(pkgName: string) {
+        const globalLinks = await this.getGloballyLinkedPackages();
+
+        return globalLinks.includes(pkgName);
+    }
+
+    /**
      * Retrieves the installed version of a given package.
      * @param pkgName The package name.
      * @returns
@@ -195,8 +208,9 @@ export class Yarn {
      * @param pkgName The package name.
      * @returns
      */
-    public static install(pkgName?: string) {
+    public static install(pkgName?: string, opts?: YarnCommandOptions) {
         return this.execYarn({
+            ...opts ?? {},
             cmd: "add",
             args: [pkgName],
             interactive: false,
@@ -210,8 +224,9 @@ export class Yarn {
      * @param pkgName The package name.
      * @returns
      */
-    public static link(pkgName?: string) {
+    public static link(pkgName?: string, opts?: YarnCommandOptions) {
         return this.execYarn({
+            ...opts ?? {},
             cmd: "link",
             args: pkgName ? [pkgName] : [],
             interactive: false,
@@ -225,8 +240,9 @@ export class Yarn {
      * @param pkgName The package name.
      * @returns
      */
-    public static upgrade(pkgName?: string) {
+    public static upgrade(pkgName?: string, opts?: YarnCommandOptions) {
         return this.execYarn({
+            ...opts ?? {},
             cmd: "upgrade",
             args: [pkgName],
             interactive: false,
@@ -265,7 +281,7 @@ export class Yarn {
 
         const items: string[] = [...rootItems];
 
-        for(const item of rootItems) {
+        for (const item of rootItems) {
             // If starts with a "@"
             if (item.startsWith("@")) {
                 // Also load its children
@@ -281,7 +297,7 @@ export class Yarn {
         }
 
         // Iterate over all items
-        for(const item of items) {
+        for (const item of items) {
             const fullPath = path.resolve(linksPath, item);
 
             // Ignore if it it's a broken link or isn't a folder

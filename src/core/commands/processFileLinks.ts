@@ -1,3 +1,4 @@
+import path from "path";
 import { Yarn } from "../../helpers/Yarn";
 import { App } from "../App";
 import { logger } from "../Logger";
@@ -18,17 +19,21 @@ export const processFileLinks = async () => {
         }
 
         // If it's not linked yet, link it
-        if (!Yarn.isLinked(pkgName)) {
-            logger.info("\"%s\" isn't linked, will be linked first");
+        if (!await Yarn.packageHasLink(pkgName)) {
+            logger.info("local package \"%s\" isn't linked, will create a link for it first", pkgName);
 
-            // Link it
-            await Yarn.link(pkgName);
+            const packagePath = pkgPathOrVersion.replace(/file\:(\/\/)?/, "");
+
+            // Create a link for it
+            await Yarn.link(null, {
+                cwd: path.resolve(process.cwd(), packagePath)
+            });
 
             logger.info("successfully created a link for \"%s\"", pkgName);
         }
 
         await App.instance().performSingleLink(pkgName);
 
-        logger.info("successfully linked file package \"%s\"", pkgName);
+        logger.info("successfully linked local package \"%s\"", pkgName);
     }
 }
