@@ -1,6 +1,6 @@
+import { ChildProcess, spawn } from "child_process";
 import * as cliProgress from "cli-progress";
 import type { IYarnExecOptions } from "./Yarn";
-import { ChildProcess, spawn } from "child_process";
 
 import which from "which";
 
@@ -207,7 +207,8 @@ export class ExternalYarn {
     public async run() {
         this.childProcess = spawn(await ExternalYarn.getYarnBinPath(), this.buildArguments(), {
             cwd: this.options.cwd ?? process.cwd(),
-            env: process.env
+            env: process.env,
+            shell: true
         });
 
         await new Promise<void>((resolve, reject) => {
