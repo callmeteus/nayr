@@ -205,7 +205,14 @@ export class ExternalYarn {
     }
 
     public async run() {
-        this.childProcess = spawn(await ExternalYarn.getYarnBinPath(), this.buildArguments(), {
+        let bin = await ExternalYarn.getYarnBinPath();
+
+        // If in win32, need to encapsulate the path string
+        if (process.platform === "win32") {
+            bin = `"${bin}"`;
+        }
+
+        this.childProcess = spawn(bin, this.buildArguments(), {
             cwd: this.options.cwd ?? process.cwd(),
             env: process.env,
             shell: true
@@ -256,10 +263,14 @@ export class ExternalYarn {
                 this.cliProgress && this.cliProgress.stop();
 
                 if (code === 0) {
-                    resolve();
+                    return resolve();
                 }
+
+                const err = new Error("Process exited with code " + code) as Error & Record<string, any>;
+                err.stdout = this.stdout || null;
+                err.stderr = this.stderr || null;
                 
-                reject(new Error("Process exited with code " + code));
+                reject(err);
             });
 
             this.childProcess.on("error", (err) => reject(err));
