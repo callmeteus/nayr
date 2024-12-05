@@ -1,7 +1,7 @@
 {
   "name": "nayr",
   "description": "Nayr allows you to automatically generate links for your yarn packages.",
-  "version": "1.0.100000008",
+  "version": "1.0.100000009",
   "main": "dist/index.js",
   "license": "MIT",
   "repository": "https://github.com/callmeteus/nayr",
