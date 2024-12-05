@@ -1,8 +1,8 @@
+import * as fs from "fs";
 import { glob } from "glob";
 import * as path from "path";
-import * as fs from "fs";
-import { logger } from "../Logger";
 import { Yarn } from "../../helpers/Yarn";
+import { logger } from "../Logger";
 
 /**
  * Creates multiple links for a given pattern.
@@ -29,6 +29,12 @@ export const mklink = async(link: {
         cwd: process.cwd(),
         ignore: "node_modules/**"
     });
+
+    // If there's no possible project paths
+    if (!possibleProjectPaths.length) {
+        logger.error("found no folders matching the pattern \"%s\"", link.pattern);
+        return;
+    }
 
     for (const projectPath of possibleProjectPaths) {
         const packageJsonPath = path.resolve(projectPath, "package.json");

@@ -4,8 +4,8 @@ import { execSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 
-import { ExternalYarn, execYarn as invokeYarn } from "./ExternalYarn";
 import { logger } from "../core/Logger";
+import { ExternalYarn, execYarn as invokeYarn } from "./ExternalYarn";
 
 export interface IYarnExecOptions {
     cmd: string;
@@ -274,6 +274,19 @@ export class Yarn {
         includeBroken?: boolean;
     }) {
         const linksPath = await this.getGlobalLinksPath();
+
+        // Throw if the path doesn't exist
+        if (!fs.existsSync(linksPath)) {
+            const err = new Error("The global links path wasn't found.\nThis could mean that no links were created yet.\nYou can create a link by running `nayr link` in the package folder.") as  Error & {
+                code: string;
+                path: string;
+            };
+
+            err.code = "ENOENT";
+            err.path = linksPath;
+
+            throw err;
+        }
 
         const rootItems = await fs.promises.readdir(linksPath, {
             recursive: false

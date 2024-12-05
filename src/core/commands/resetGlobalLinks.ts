@@ -3,9 +3,10 @@ import { Yarn } from "../../helpers/Yarn";
 import { logger } from "../Logger";
 
 /**
-     * Resets global links.
-     * @param opts Any options to be passed to the resetter.
-     */
+ * Resets global links.
+ * This operation will unlink all globally linked packages.
+ * @param opts Any options to be passed to the resetter.
+ */
 export const resetGlobalLinks = async (opts?: {
     /**
      * Will only delete broken symlinks.
