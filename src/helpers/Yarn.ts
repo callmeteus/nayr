@@ -273,13 +273,13 @@ export class Yarn {
         // When `root`, the global folder is inside `/usr/local/share/.config`
         // But when another user is logged in, it's inside `/home/user/.config`
         // So we need to check both.
-        let globalFolder = path.resolve(homedir(), ".config/yarn");
+        let globalFolder = path.resolve(homedir(), ".config");
 
         if (!fs.existsSync(globalFolder)) {
-            globalFolder = path.resolve("/usr/local/share/.config/yarn");
+            globalFolder = path.resolve("/usr/local/share/.config");
         }
 
-        return path.resolve(globalFolder, "link");
+        return path.resolve(globalFolder, "yarn/link");
     }
 
     /**
