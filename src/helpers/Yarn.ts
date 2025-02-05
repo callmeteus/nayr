@@ -4,6 +4,7 @@ import { execSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 
+import { homedir, platform } from "os";
 import { logger } from "../core/Logger";
 import { ExternalYarn, execYarn as invokeYarn } from "./ExternalYarn";
 
@@ -256,15 +257,19 @@ export class Yarn {
      * @returns 
      */
     public static async getGlobalLinksPath() {
-        const binFolder = await this.execYarn<string>({
-            cmd: "global",
-            args: ["bin"],
-            json: false,
-            progress: false,
-            interactive: false
-        });
+        if (platform() === "win32") {
+            const binFolder = await this.execYarn<string>({
+                cmd: "global",
+                args: ["bin"],
+                json: false,
+                progress: false,
+                interactive: false
+            });
 
-        return path.resolve(binFolder.replace("bin", "Data/link")).trim();
+            return path.resolve(binFolder.replace("bin", "Data/link")).trim();
+        }
+
+        return path.resolve(homedir(), ".config/yarn/link");
     }
 
     /**
