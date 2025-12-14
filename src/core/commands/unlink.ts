@@ -1,9 +1,9 @@
+import path from "path";
 import { exitWithError } from "../../helpers/Process";
 import { Yarn } from "../../helpers/Yarn";
 import { ILinkOptions } from "../App";
 import { logger } from "../Logger";
 
-import * as path from "path";
 import * as fs from "fs";
 
 /**
@@ -30,6 +30,27 @@ export const unlink = async (unlink: ILinkOptions) => {
         return;
     }
 
+    // If package is ".", we need to unlink the current package
+    if (unlink.package === ".") {
+        const packageJsonPath = path.resolve(process.cwd(), "package.json");
+
+        // If no package.json was found
+        if (!fs.existsSync(packageJsonPath)) {
+            return exitWithError("No package.json found in the current directory.");
+        }
+
+        // Read the package.json file
+        const packageJson = JSON.parse(
+            fs.readFileSync(
+                packageJsonPath,
+                "utf8"
+            )
+        );
+
+        // Set the package name
+        unlink.package = packageJson.name;
+    }
+
     // If it's a global unlink
     if (unlink.global) {
         // Try finding the original link folder
@@ -46,24 +67,32 @@ export const unlink = async (unlink: ILinkOptions) => {
         try {
             // If the symlink still exists
             if (fs.lstatSync(linkFolder).isSymbolicLink()) {
+                const realPath = fs.realpathSync(linkFolder);
+
                 // If it's a broken symlink
-                if (!fs.existsSync(linkFolder)) {
+                if (!fs.existsSync(realPath)) {
                     // If it's not forcing a deletion
                     if (!unlink.force) {
                         return exitWithError("The given symlink doesn't resolve to anywhere. Use --force to abruptly delete the symlink.");
                     }
 
+                    logger.info("broken symlink found, deleting");
+
                     // Delete the symlink
                     await fs.promises.unlink(linkFolder);
                 } else {
-                    // Just all unlink at the folder
-                    await Yarn.execYarn({
-                        cmd: "unlink",
-                        cwd: path.resolve(linkFolder)
-                    });
+                    try {
+                        // Just all unlink at the folder
+                        await Yarn.execYarn({
+                            cmd: "unlink",
+                            cwd: realPath
+                        });
+                    } catch(e) {
+                        return exitWithError("Error unlinking %s (%s): %O", linkFolder, realPath, e);
+                    }
                 }
             } else {
-                throw new Error("Invalid symlink found.");
+                return exitWithError("Invalid symlink found.");
             }
         } catch(e) {
             console.error(e);
