@@ -1,5 +1,6 @@
 import axios from "axios";
 import { execSync } from "child_process";
+import { glob } from "glob";
 
 import * as fs from "fs";
 import * as path from "path";
@@ -341,6 +342,68 @@ export class Yarn {
         }
 
         return items;
+    }
+
+    /**
+     * Resolves the absolute path of a workspace package by name.
+     * Traverses up from the current directory looking for package.json files
+     * that declare workspaces, expanding their glob patterns recursively until
+     * the package is found or the filesystem root is reached.
+     * @param pkgName The package name to resolve.
+     * @returns The absolute path to the workspace package, or null if not found.
+     */
+    public static async resolveWorkspacePackagePath(pkgName: string): Promise<string | null> {
+        let dir = process.cwd();
+
+        // Traverse up through every workspace root until the package is found
+        while (true) {
+            const pkgFile = path.resolve(dir, "package.json");
+
+            if (fs.existsSync(pkgFile)) {
+                const pkg = JSON.parse(fs.readFileSync(pkgFile, "utf8"));
+
+                // If this package.json declares workspaces, search inside it
+                if (pkg.workspaces) {
+                    const patterns: string[] = Array.isArray(pkg.workspaces)
+                        ? pkg.workspaces
+                        : pkg.workspaces.packages ?? [];
+
+                    for (const pattern of patterns) {
+                        const matches = await glob(pattern, {
+                            cwd: dir,
+                            absolute: true
+                        });
+
+                        for (const match of matches) {
+                            const matchPkgFile = path.resolve(match, "package.json");
+
+                            if (!fs.existsSync(matchPkgFile)) {
+                                continue;
+                            }
+
+                            const matchPkg = JSON.parse(fs.readFileSync(matchPkgFile, "utf8"));
+
+                            if (matchPkg.name === pkgName) {
+                                return match;
+                            }
+                        }
+                    }
+
+                    // Package not found in this workspace - keep traversing up
+                }
+            }
+
+            const parent = path.dirname(dir);
+
+            // Reached the filesystem root
+            if (parent === dir) {
+                break;
+            }
+
+            dir = parent;
+        }
+
+        return null;
     }
 
     /**

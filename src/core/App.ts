@@ -150,6 +150,11 @@ export class App {
      * @returns 
      */
     public getLocalPackages() {
+        // If no package.json was found, return empty
+        if (!this.packageJson) {
+            return {};
+        }
+
         return {
             ...this.packageJson.dependencies ?? {},
             ...this.packageJson.devDependencies ?? {},
