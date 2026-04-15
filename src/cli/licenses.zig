@@ -45,7 +45,7 @@ pub fn run(
         defer allocator.free(pkg_path);
 
         if (entry.name[0] == '@') {
-            // Scoped package directory — recurse one level to find `@scope/pkg`.
+            // Scoped package directory - recurse one level to find `@scope/pkg`.
             try collectScoped(allocator, pkg_path, entry.name, &license_map);
         } else {
             try collectOne(allocator, pkg_path, entry.name, &license_map);
@@ -111,7 +111,7 @@ fn collectScoped(
 /// Reads a single package's `package.json` and inserts it into `map` keyed
 /// by its license string.
 ///
-/// The map owns both the license key and the package name value — both are
+/// The map owns both the license key and the package name value - both are
 /// heap-allocated here and freed by the caller's defer block in `run`.
 fn collectOne(
     allocator: std.mem.Allocator,
@@ -132,7 +132,7 @@ fn collectOne(
     defer parsed.deinit();
 
     // Extract license string. `parsed` is freed at the end of this function so
-    // we must NOT store any slice that points into the parsed tree — dupe everything.
+    // we must NOT store any slice that points into the parsed tree - dupe everything.
     const license_raw: []const u8 = blk: {
         if (parsed.value == .object) {
             if (parsed.value.object.get("license")) |lic| {

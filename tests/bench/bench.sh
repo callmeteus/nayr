@@ -217,7 +217,7 @@ fi
 # Setup: prepare temp dirs and prime caches for warm/locked scenarios
 # ---------------------------------------------------------------------------
 if [ "$JSON_OUTPUT" = "0" ]; then
-    printf "\n${BOLD}${CYAN}nayr benchmark — fixture: %s, %d runs each${RESET}\n\n" "$FIXTURE" "$RUNS"
+    printf "\n${BOLD}${CYAN}nayr benchmark - fixture: %s, %d runs each${RESET}\n\n" "$FIXTURE" "$RUNS"
     printf "  Preparing scenarios...\n"
 fi
 

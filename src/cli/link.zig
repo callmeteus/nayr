@@ -189,9 +189,9 @@ fn linkPackageIntoNodeModules(
     var imported_from_yarn = false;
 
     if (std.fs.accessAbsolute(link_src, .{})) |_| {
-        // Found in nayr's registry — use it directly.
+        // Found in nayr's registry - use it directly.
     } else |_| {
-        // Not in nayr's registry — try to inherit from Yarn.
+        // Not in nayr's registry - try to inherit from Yarn.
         if (try importFromYarn(allocator, name, links_dir, writer)) {
             imported_from_yarn = true;
         } else {
@@ -220,7 +220,7 @@ fn linkPackageIntoNodeModules(
     try platform.symlinkOrJunction(link_src, dest);
 
     const link_msg = if (imported_from_yarn)
-        try std.fmt.allocPrint(allocator, "linked: {s}  (inherited from yarn — registered in nayr)", .{name})
+        try std.fmt.allocPrint(allocator, "linked: {s}  (inherited from yarn - registered in nayr)", .{name})
     else
         try std.fmt.allocPrint(allocator, "linked: {s}", .{name});
     defer allocator.free(link_msg);
@@ -230,7 +230,7 @@ fn linkPackageIntoNodeModules(
 /// Attempts to find `name` in Yarn's link registry and register it in nayr's.
 ///
 /// Returns `true` when the import succeeded; `false` when the package was not
-/// found in Yarn's registry (no error is emitted — caller decides messaging).
+/// found in Yarn's registry (no error is emitted - caller decides messaging).
 fn importFromYarn(
     allocator: std.mem.Allocator,
     name: []const u8,

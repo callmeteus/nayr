@@ -1,4 +1,4 @@
-# nayr — Test & Benchmark Guide
+# nayr - Test & Benchmark Guide
 
 ## Quick start
 
@@ -109,7 +109,7 @@ The bench script measures four scenarios that represent real-world usage:
 ### Example output
 
 ```
-nayr benchmark — fixture: simple, 5 runs each
+nayr benchmark - fixture: simple, 5 runs each
 
   Scenario              nayr        yarn        Speedup
   --------              ----        ----        -------

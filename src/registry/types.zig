@@ -27,7 +27,7 @@ pub const PackageMetadata = struct {
         var vit = self.versions.iterator();
         while (vit.next()) |kv| {
             // The map key is the same pointer as kv.value_ptr.*.version,
-            // so it is freed inside deinit() below — do NOT free it here.
+            // so it is freed inside deinit() below - do NOT free it here.
             kv.value_ptr.deinit(allocator);
         }
         self.versions.deinit(allocator);

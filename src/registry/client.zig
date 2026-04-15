@@ -42,7 +42,7 @@ pub const RegistryClient = struct {
     allocator: std.mem.Allocator,
     config: *const Config,
 
-    /// Creates a new client. Lightweight — no network activity at init time.
+    /// Creates a new client. Lightweight - no network activity at init time.
     pub fn init(allocator: std.mem.Allocator, config: *const Config) RegistryClient {
         return .{ .allocator = allocator, .config = config };
     }
@@ -200,7 +200,7 @@ fn curlGet(
 
 /// Runs `curl` to GET `url` and writes the output directly to `dest_path`.
 ///
-/// Does NOT use stdout capture — curl writes the file directly, which avoids
+/// Does NOT use stdout capture - curl writes the file directly, which avoids
 /// loading the entire tarball into memory.
 fn curlDownloadToFile(
     allocator: std.mem.Allocator,
@@ -239,7 +239,7 @@ fn curlDownloadToFile(
 }
 
 /// Appends the common curl flags shared by all requests.
-/// The URL is NOT appended by this function — callers must append it last,
+/// The URL is NOT appended by this function - callers must append it last,
 /// after any `-o <file>` or other per-call flags.
 fn buildCurlBaseArgs(
     argv: *std.ArrayList([]const u8),
@@ -271,7 +271,7 @@ fn buildCurlBaseArgs(
 ///
 /// Extracts the useful part of curl's `--show-error` output, e.g.:
 ///   `curl: (22) The requested URL returned error: 404 Not Found`
-///   → `  warn  HTTP 404 Not Found — https://registry.npmjs.org/lodash`
+///   → `  warn  HTTP 404 Not Found - https://registry.npmjs.org/lodash`
 fn logCurlError(url: []const u8, exit_code: u8, curl_stderr: []const u8) void {
     const nayr_stderr = std.io.getStdErr().writer();
 
@@ -312,7 +312,7 @@ fn runCapture(allocator: std.mem.Allocator, argv: []const []const u8) !CaptureRe
 
     // Read stdout first, then stderr. This is safe because curl with --silent
     // writes nothing to stderr on success and only a short error message on
-    // failure — the OS pipe buffer (typically 64 KB) is never exhausted.
+    // failure - the OS pipe buffer (typically 64 KB) is never exhausted.
     const stdout = try child.stdout.?.reader().readAllAlloc(allocator, 32 * 1024 * 1024);
     errdefer allocator.free(stdout);
 

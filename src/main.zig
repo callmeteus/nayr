@@ -40,7 +40,7 @@ pub fn main() !void {
             error.NetworkError =>
                 "Network request failed. Check your internet connection and registry URL.\n       (hint: run with --verbose for more details)",
             error.HttpError =>
-                "Registry returned an HTTP error — see the warning above for the URL and status.\n       Common causes: wrong registry, missing auth token, or package does not exist.",
+                "Registry returned an HTTP error - see the warning above for the URL and status.\n       Common causes: wrong registry, missing auth token, or package does not exist.",
             error.OutOfMemory =>
                 "Out of memory.",
             error.AccessDenied =>

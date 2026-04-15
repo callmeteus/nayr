@@ -31,7 +31,7 @@ const registry_cmd = @import("registry_cmd.zig");
 const login_cmd = @import("login.zig");
 const publish_cmd = @import("publish.zig");
 
-/// nayr version string — embedded from package.json at build time.
+/// nayr version string - embedded from package.json at build time.
 pub const VERSION = build_options.version;
 
 // ============================================================================
@@ -337,7 +337,7 @@ fn printHelp() void {
     const w = std.io.getStdOut().writer();
     const c = output.hasTtyStderr();
 
-    // Colour helpers — fall back to empty strings when colour is off.
+    // Colour helpers - fall back to empty strings when colour is off.
     const bold   = if (c) "\x1b[1m"    else "";
     const dim    = if (c) "\x1b[2m"    else "";
     const cyan   = if (c) "\x1b[36m"   else "";
