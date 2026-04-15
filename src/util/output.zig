@@ -569,7 +569,7 @@ const JsonWriter = struct {
 ///   - `format` is `.tui` (i.e. the output is an interactive terminal), AND
 ///   - `silent` is false.
 ///
-/// The line is intentionally short — no taglines or ASCII art — so it stays
+/// The line is intentionally short - no taglines or ASCII art - so it stays
 /// clean inside monorepo build output.
 pub fn printBanner(format: Format, silent: bool) void {
     if (silent or format != .tui) return;

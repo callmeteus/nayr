@@ -35,7 +35,7 @@ pub fn satisfies(allocator: std.mem.Allocator, version_str: []const u8, range_st
 /// it is preferred even if a newer version also satisfies it.
 ///
 /// Pre-release versions (e.g. `1.0.0-beta.1`) are excluded from consideration
-/// unless the range itself references a pre-release version — this matches npm
+/// unless the range itself references a pre-release version - this matches npm
 /// semver's behaviour where `^4` should never resolve to `5.0.0-beta.1`.
 ///
 /// ## Parameters

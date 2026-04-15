@@ -137,7 +137,7 @@ fn runScript(
 /// following npm's convention for lifecycle script environments.
 ///
 /// Prepended directories (in order):
-///   1. `{root}/node_modules/.bin`   — hoisted / root-level executables
+///   1. `{root}/node_modules/.bin`   - hoisted / root-level executables
 ///
 /// The caller owns the returned slice.
 fn buildScriptPath(allocator: std.mem.Allocator, root_dir: []const u8) ![]const u8 {

@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/callmeteus/nayr/actions/workflows/ci.yml/badge.svg)](https://github.com/callmeteus/nayr/actions/workflows/ci.yml)
 
-Fast, lock-free Node.js package manager — drop-in replacement for Yarn Classic v1, written in Zig.
+Fast, lock-free Node.js package manager - drop-in replacement for Yarn Classic v1, written in Zig.
 
 ```
 nayr v2.0.0  fast · lock-free · yarn-compatible
@@ -12,41 +12,41 @@ nayr v2.0.0  fast · lock-free · yarn-compatible
 
 Yarn Classic is slow and ships a massive JavaScript runtime just to move files around. nayr does the same work in native code:
 
-- **No JS overhead** — compiled Zig binary, starts in milliseconds
-- **Lock-free global cache** — concurrent downloads with zero mutex contention
-- **Full workspace support** — monorepo hoisting handled correctly
-- **Yarn-compatible** — reads `yarn.lock` v1 (migration), writes `nayr.lock`
-- **Multi-registry login** — `nayr login` supports multiple registries simultaneously (Yarn Classic doesn't)
-- **Configurable Git pinning** — pinned commit hashes for Git dependencies, controllable per-repo or per-org in `.nayrrc`
+- **No JS overhead** - compiled Zig binary, starts in milliseconds
+- **Lock-free global cache** - concurrent downloads with zero mutex contention
+- **Full workspace support** - monorepo hoisting handled correctly
+- **Yarn-compatible** - reads `yarn.lock` v1 (migration), writes `nayr.lock`
+- **Multi-registry login** - `nayr login` supports multiple registries simultaneously (Yarn Classic doesn't)
+- **Configurable Git pinning** - pinned commit hashes for Git dependencies, controllable per-repo or per-org in `.nayrrc`
 
 ---
 
 ## Benchmarks
 
-> Median of 5 runs on the same machine (Linux, AMD Ryzen 9, NVMe SSD).  
-> Run your own: `sh tests/bench/bench.sh --runs 5`
+> Median of 3 runs on the same machine (Linux, AMD Ryzen 9, NVMe SSD).  
+> Run your own: `bash tests/bench/bench.sh --runs 3`
 
 ### Simple fixture (`lodash`, `ms`, `is-odd`)
 
 | Scenario | nayr | yarn 1.22 | Speedup |
 |---|---|---|---|
-| **cold install** (no cache, no lockfile) | 428 ms | 1010 ms | **2.4×** |
-| **warm install** (cache hit, no lockfile) | 214 ms | 694 ms | **3.2×** |
-| **locked install** (cache + lockfile, fresh `node_modules`) | 212 ms | 442 ms | **2.1×** |
-| **no-op** (nothing changed) | **2 ms** | 337 ms | **168×** |
+| **cold install** (no cache, no lockfile) | 462 ms | 1164 ms | **2.5×** |
+| **warm install** (cache hit, no lockfile) | 239 ms | 631 ms | **2.6×** |
+| **locked install** (cache + lockfile, fresh `node_modules`) | 229 ms | 383 ms | **1.7×** |
+| **no-op** (nothing changed) | **3 ms** | 340 ms | **113×** |
 
 ### Workspace fixture (root + 2 packages, 5 deps total)
 
 | Scenario | nayr | yarn 1.22 | Speedup |
 |---|---|---|---|
-| **cold install** | 415 ms | 984 ms | **2.4×** |
-| **warm install** | 213 ms | 642 ms | **3.0×** |
-| **locked install** | 217 ms | 402 ms | **1.9×** |
-| **no-op** | **2 ms** | 351 ms | **175×** |
+| **cold install** | 446 ms | 1188 ms | **2.7×** |
+| **warm install** | 410 ms | 663 ms | **1.6×** |
+| **locked install** | 226 ms | 416 ms | **1.8×** |
+| **no-op** | **3 ms** | 314 ms | **105×** |
 
-The no-op path is the one developers hit on every save/switch. nayr exits in ~2 ms by checking an integrity stamp; yarn spends ~340 ms in Node.js startup before it can even begin.
+The no-op path is the one developers hit on every save/switch. nayr exits in ~3 ms by checking an integrity stamp; yarn spends ~330 ms in Node.js startup before it can even begin.
 
-Resolution is parallelised via a FIFO worker pool: as soon as any package metadata arrives, its transitive deps are pushed to free workers immediately — no waiting for an entire "wave" to finish. Fetching and linking are also fully parallel.
+Resolution is parallelised via a FIFO worker pool: as soon as any package metadata arrives, its transitive deps are pushed to free workers immediately - no waiting for an entire "wave" to finish. Fetching and linking are also fully parallel.
 
 ---
 
@@ -73,7 +73,7 @@ zig build -Doptimize=ReleaseFast
 
 ## Usage
 
-nayr is a drop-in replacement — any command you know from Yarn Classic works:
+nayr is a drop-in replacement - any command you know from Yarn Classic works:
 
 ```sh
 nayr install              # install all dependencies
@@ -82,7 +82,7 @@ nayr add -D typescript    # add a dev dependency
 nayr remove lodash        # remove a package
 nayr upgrade lodash       # upgrade to latest matching range
 nayr run build            # run package.json script
-nayr build                # shorthand — catch-all for scripts
+nayr build                # shorthand - catch-all for scripts
 nayr why lodash           # explain why a package is installed
 nayr licenses list        # list all package licenses
 nayr audit                # security audit
@@ -144,9 +144,9 @@ nayr cache clean           # clear the global cache
 
 nayr reads configuration from (in order of priority):
 
-1. **`.nayrrc`** — nayr-specific settings (JSON)
-2. **`.yarnrc`** — Yarn Classic settings (for compatibility)
-3. **`.npmrc`** — npm/registry settings
+1. **`.nayrrc`** - nayr-specific settings (JSON)
+2. **`.yarnrc`** - Yarn Classic settings (for compatibility)
+3. **`.npmrc`** - npm/registry settings
 
 ### `.nayrrc` example
 
@@ -159,7 +159,7 @@ nayr reads configuration from (in order of priority):
 }
 ```
 
-**Git hash pinning** (`gitPinning`) is enabled by default — when installing Git dependencies, nayr records the resolved commit SHA as the integrity hash. Disable it entirely, per-repo, or per-org using `gitPinning.disable`.
+**Git hash pinning** (`gitPinning`) is enabled by default - when installing Git dependencies, nayr records the resolved commit SHA as the integrity hash. Disable it entirely, per-repo, or per-org using `gitPinning.disable`.
 
 ---
 

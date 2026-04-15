@@ -4,11 +4,11 @@
 //! Packages are "hoisted" (moved up in the node_modules tree) to reduce
 //! duplication. The algorithm runs in 4 phases:
 //!
-//!   1. Prepass   — count how many resolved packages share each name.
-//!   2. Seeding   — elect the "best" (most popular, then newest) version of
+//!   1. Prepass   - count how many resolved packages share each name.
+//!   2. Seeding   - elect the "best" (most popular, then newest) version of
 //!                  each package for root-level placement.
-//!   3. Hoist     — assign root install paths; skip non-root versions for now.
-//!   4. Resolve   — for every root-hoisted package, check if its declared
+//!   3. Hoist     - assign root install paths; skip non-root versions for now.
+//!   4. Resolve   - for every root-hoisted package, check if its declared
 //!                  dependency ranges are satisfied by the root-elected version
 //!                  of each dep. If not, install the correct version nested
 //!                  directly inside that package's node_modules subdirectory.
@@ -70,7 +70,7 @@ pub fn hoist(
     while (it.next()) |p| try pkgs.append(p);
 
     // -------------------------------------------------------------------------
-    // Phase 1: Prepass — count how many entries share a (name, version) key.
+    // Phase 1: Prepass - count how many entries share a (name, version) key.
     // -------------------------------------------------------------------------
     var version_counts = std.StringHashMapUnmanaged(VersionCount){};
     defer {
@@ -91,7 +91,7 @@ pub fn hoist(
     }
 
     // -------------------------------------------------------------------------
-    // Phase 2: Seeding — elect the root version for each package name.
+    // Phase 2: Seeding - elect the root version for each package name.
     //
     // Prefer the version with the highest dependent-count. Break ties by
     // choosing the semantically newer version: the newer release satisfies a
@@ -117,7 +117,7 @@ pub fn hoist(
     }
 
     // -------------------------------------------------------------------------
-    // Phase 3: Hoist — assign root install paths to root-elected packages.
+    // Phase 3: Hoist - assign root install paths to root-elected packages.
     //
     // Non-root versions are NOT placed at any path here; Phase 4 will insert
     // them nested directly under their dependents where they are needed.
@@ -167,7 +167,7 @@ pub fn hoist(
     }
 
     // -------------------------------------------------------------------------
-    // Phase 4: Conflict resolution — BFS nesting of alternative versions.
+    // Phase 4: Conflict resolution - BFS nesting of alternative versions.
     //
     // Process all hoisted packages (root + previously nested) through a BFS
     // work queue. For each package, check whether the root-elected version of

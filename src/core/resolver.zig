@@ -23,7 +23,7 @@
 //!
 //! Workers fetch metadata and push results back via a result queue. The main
 //! thread processes results as they arrive and immediately queues transitive
-//! deps — no waiting for an entire "wave" to finish. This gives true FIFO
+//! deps - no waiting for an entire "wave" to finish. This gives true FIFO
 //! pipeline behaviour: deeper levels start fetching as soon as their parent
 //! result is ready, not after all siblings complete.
 
@@ -317,7 +317,7 @@ pub fn resolve(
                 continue;
             }
 
-            // 1.5. Link registry hit — highest priority for external dev checkouts.
+            // 1.5. Link registry hit - highest priority for external dev checkouts.
             //
             // If the package name is registered in the nayr or yarn link
             // registry, use the local development checkout unconditionally.
@@ -394,7 +394,7 @@ pub fn resolve(
                 }
             }
 
-            // 3. Git dependency (serial — uncommon).
+            // 3. Git dependency (serial - uncommon).
             if (isGitDep(effective_range)) {
                 if (opts.frozen_lockfile) return error.FrozenLockfileChanged;
                 const rp = try resolveGitDep(allocator, req.name, effective_range, config);
@@ -413,7 +413,7 @@ pub fn resolve(
                 continue;
             }
 
-            // 4. Registry — hand off to the worker pool.
+            // 4. Registry - hand off to the worker pool.
             if (opts.frozen_lockfile) return error.FrozenLockfileChanged;
             ch.fetch_mutex.lock();
             try ch.fetch_items.append(allocator, FetchJob{
