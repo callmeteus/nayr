@@ -1,0 +1,12 @@
+.{
+    .name = .nayr,
+    .fingerprint = 0xf35e2c94dd5dab28,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.14.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

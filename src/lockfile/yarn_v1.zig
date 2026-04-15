@@ -1,0 +1,271 @@
+//! Yarn Classic v1 Lockfile Parser
+//!
+//! Parses yarn.lock v1 files. The format is a non-standard subset of YAML
+//! invented by Yarn — it is NOT a generic YAML parser. The tokenizer is
+//! hand-written for performance and correctness.
+//!
+//! This parser is read-only: nayr reads yarn.lock during migration but always
+//! writes `nayr.lock` from that point forward.
+//!
+//! Format overview:
+//!
+//! ```
+//! # yarn lockfile v1
+//!
+//! "lodash@^4.17.0", "lodash@^4.17.21":
+//!   version "4.17.21"
+//!   resolved "https://..."
+//!   integrity sha512-...
+//!   dependencies:
+//!     dep-a "^1.0.0"
+//! ```
+
+const std = @import("std");
+const types = @import("types.zig");
+const LockfileEntry = types.LockfileEntry;
+const Lockfile = types.Lockfile;
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+/// Parses a yarn.lock v1 file from the given path.
+///
+/// ## Parameters
+/// - `allocator`: All strings and maps are allocated here.
+/// - `path`: Absolute path to the `yarn.lock` file.
+///
+/// ## Returns
+/// A `Lockfile` populated with all entries, or an error.
+pub fn parseFile(allocator: std.mem.Allocator, path: []const u8) !Lockfile {
+    const file = try std.fs.openFileAbsolute(path, .{});
+    defer file.close();
+    const contents = try file.readToEndAlloc(allocator, 32 * 1024 * 1024); // 32 MB max
+    defer allocator.free(contents);
+    return parseSlice(allocator, contents);
+}
+
+/// Parses a yarn.lock v1 file from an in-memory byte slice.
+///
+/// ## Parameters
+/// - `allocator`: All strings and maps are allocated here.
+/// - `src`: Raw bytes of the lockfile.
+pub fn parseSlice(allocator: std.mem.Allocator, src: []const u8) !Lockfile {
+    // Verify magic header.
+    if (!std.mem.startsWith(u8, src, "# yarn lockfile v1")) {
+        return error.NotYarnV1Lockfile;
+    }
+
+    var entries = std.ArrayList(LockfileEntry).init(allocator);
+    var pattern_map = std.StringHashMapUnmanaged(usize){};
+
+    var parser = Parser{ .src = src, .pos = 0, .allocator = allocator };
+
+    while (parser.pos < parser.src.len) {
+        parser.skipBlankLines();
+        if (parser.pos >= parser.src.len) break;
+
+        // Skip comment lines.
+        if (parser.currentChar() == '#') {
+            parser.skipToEndOfLine();
+            continue;
+        }
+
+        // Parse entry.
+        const entry = parser.parseEntry() catch {
+            // Skip malformed entries rather than aborting the whole parse.
+            parser.skipToEndOfLine();
+            continue;
+        };
+
+        const entry_idx = entries.items.len;
+        for (entry.patterns) |pat| {
+            try pattern_map.put(allocator, pat, entry_idx);
+        }
+        try entries.append(entry);
+    }
+
+    return Lockfile{
+        .pattern_map = pattern_map,
+        .entries = try entries.toOwnedSlice(),
+        .workspaces = .{},
+    };
+}
+
+// ============================================================================
+// Parser state machine
+// ============================================================================
+
+const Parser = struct {
+    src: []const u8,
+    pos: usize,
+    allocator: std.mem.Allocator,
+
+    fn currentChar(self: *const Parser) u8 {
+        return if (self.pos < self.src.len) self.src[self.pos] else 0;
+    }
+
+    fn atEnd(self: *const Parser) bool {
+        return self.pos >= self.src.len;
+    }
+
+    fn skipToEndOfLine(self: *Parser) void {
+        while (self.pos < self.src.len and self.src[self.pos] != '\n') self.pos += 1;
+        if (self.pos < self.src.len) self.pos += 1;
+    }
+
+    fn skipBlankLines(self: *Parser) void {
+        while (self.pos < self.src.len) {
+            const c = self.src[self.pos];
+            if (c == '\n' or c == '\r' or c == ' ') {
+                self.pos += 1;
+            } else break;
+        }
+    }
+
+    /// Reads the indentation level (number of leading spaces) at the current pos.
+    fn indentLevel(self: *const Parser) usize {
+        var count: usize = 0;
+        var i = self.pos;
+        while (i < self.src.len and self.src[i] == ' ') : (i += 1) count += 1;
+        return count;
+    }
+
+    /// Parses one lockfile entry starting at the current position.
+    ///
+    /// An entry starts with one or more quoted patterns on a header line,
+    /// followed by indented key-value pairs.
+    fn parseEntry(self: *Parser) !LockfileEntry {
+        // Parse the pattern header: `"pkg@^1.0.0", "pkg@^1.0.1":`
+        const patterns = try self.parsePatternHeader();
+
+        var entry = LockfileEntry{
+            .patterns = patterns,
+            .version = "",
+        };
+
+        // Parse indented body (2 spaces).
+        while (!self.atEnd()) {
+            const indent = self.indentLevel();
+            if (indent == 0) break; // next entry or blank line
+
+            self.pos += indent;
+            const key = self.readWord();
+            self.skipInlineWhitespace();
+
+            if (std.mem.eql(u8, key, "version")) {
+                entry.version = try self.allocator.dupe(u8, self.readQuotedOrBare());
+            } else if (std.mem.eql(u8, key, "resolved")) {
+                // Strip hash fragment from URL (e.g. "https://...#abc123").
+                const raw = self.readQuotedOrBare();
+                const url = if (std.mem.indexOfScalar(u8, raw, '#')) |hash_pos|
+                    raw[0..hash_pos]
+                else
+                    raw;
+                entry.resolved = try self.allocator.dupe(u8, url);
+            } else if (std.mem.eql(u8, key, "integrity")) {
+                entry.integrity = try self.allocator.dupe(u8, self.readQuotedOrBare());
+            } else if (std.mem.eql(u8, key, "dependencies")) {
+                // Consume `:` then parse nested key-value map.
+                self.skipToEndOfLine();
+                try self.parseDependencyMap(&entry.dependencies, indent + 2);
+                continue; // parseDependencyMap has already advanced pos
+            } else if (std.mem.eql(u8, key, "optionalDependencies")) {
+                self.skipToEndOfLine();
+                try self.parseDependencyMap(&entry.optional_dependencies, indent + 2);
+                continue;
+            } else {
+                // Unknown key — skip.
+            }
+            self.skipToEndOfLine();
+        }
+
+        return entry;
+    }
+
+    /// Parses a pattern header line: `"pkg@range", "pkg@range2":`
+    fn parsePatternHeader(self: *Parser) ![]const []const u8 {
+        var patterns = std.ArrayList([]const u8).init(self.allocator);
+
+        while (!self.atEnd() and self.src[self.pos] != ':' and self.src[self.pos] != '\n') {
+            self.skipInlineWhitespace();
+            const raw = self.readQuotedOrBare();
+            if (raw.len == 0) break;
+            // Remove surrounding quotes if present.
+            const pat = if (raw.len >= 2 and raw[0] == '"')
+                raw[1 .. raw.len - 1]
+            else
+                raw;
+            try patterns.append(try self.allocator.dupe(u8, pat));
+
+            self.skipInlineWhitespace();
+            // Skip comma separator.
+            if (!self.atEnd() and self.src[self.pos] == ',') self.pos += 1;
+        }
+
+        // Consume the `:` and newline.
+        if (!self.atEnd() and self.src[self.pos] == ':') self.pos += 1;
+        self.skipToEndOfLine();
+
+        return patterns.toOwnedSlice();
+    }
+
+    /// Parses a `dependencies:` sub-block at `expected_indent` indentation.
+    fn parseDependencyMap(
+        self: *Parser,
+        map: *std.StringHashMapUnmanaged([]const u8),
+        expected_indent: usize,
+    ) !void {
+        while (!self.atEnd()) {
+            const indent = self.indentLevel();
+            if (indent < expected_indent) break;
+
+            self.pos += indent;
+            const key = try self.allocator.dupe(u8, self.readWord());
+            self.skipInlineWhitespace();
+            const val = try self.allocator.dupe(u8, self.readQuotedOrBare());
+            try map.put(self.allocator, key, val);
+            self.skipToEndOfLine();
+        }
+    }
+
+    /// Reads a word (non-whitespace chars) without consuming trailing whitespace.
+    fn readWord(self: *Parser) []const u8 {
+        const start = self.pos;
+        while (self.pos < self.src.len) {
+            const c = self.src[self.pos];
+            if (c == ' ' or c == '\t' or c == '\n' or c == '\r' or c == ':') break;
+            self.pos += 1;
+        }
+        return self.src[start..self.pos];
+    }
+
+    /// Reads a value: either a double-quoted string or a bare token up to EOL.
+    fn readQuotedOrBare(self: *Parser) []const u8 {
+        if (self.pos < self.src.len and self.src[self.pos] == '"') {
+            // Quoted string: read until closing `"`, return contents without quotes.
+            self.pos += 1; // skip opening "
+            const start = self.pos;
+            while (self.pos < self.src.len and self.src[self.pos] != '"' and self.src[self.pos] != '\n') {
+                self.pos += 1;
+            }
+            const result = self.src[start..self.pos];
+            if (self.pos < self.src.len) self.pos += 1; // skip closing "
+            return result;
+        }
+        // Bare token: read until whitespace or end-of-line.
+        const start = self.pos;
+        while (self.pos < self.src.len) {
+            const c = self.src[self.pos];
+            if (c == ' ' or c == '\t' or c == '\n' or c == '\r') break;
+            self.pos += 1;
+        }
+        return self.src[start..self.pos];
+    }
+
+    fn skipInlineWhitespace(self: *Parser) void {
+        while (self.pos < self.src.len and (self.src[self.pos] == ' ' or self.src[self.pos] == '\t')) {
+            self.pos += 1;
+        }
+    }
+};

@@ -1,0 +1,238 @@
+//! .nayrrc Parser
+//!
+//! Parses `.nayrrc` files (TOML-like format, exclusive to nayr).
+//! This file controls nayr-specific behaviour that has no equivalent in
+//! `.npmrc` or `.yarnrc`.
+//!
+//! Supported sections:
+//!
+//!   [registry.<name>]    — private registry configuration
+//!   [git]                — git dependency hash pinning behaviour
+//!
+//! Example:
+//!
+//! ```toml
+//! [registry.private]
+//! url = "http://npm.arpa"
+//! type = "verdaccio"
+//! auto-sync = true
+//!
+//! [git]
+//! pin-hash = true
+//! no-pin-orgs = ["edjdigital"]
+//! no-pin-repos = ["edjdigital/lemon-linting"]
+//! ```
+
+const std = @import("std");
+const types = @import("types.zig");
+const Config = types.Config;
+const RegistryConfig = types.RegistryConfig;
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+/// Parses a `.nayrrc` file and merges its values into `config`.
+///
+/// ## Parameters
+/// - `config`: The config to merge into.
+/// - `path`: Absolute path to the `.nayrrc` file.
+/// - `overwrite`: When true, values from this file overwrite existing ones.
+pub fn parseFile(config: *Config, path: []const u8, overwrite: bool) !void {
+    const file = std.fs.openFileAbsolute(path, .{}) catch |err| {
+        if (err == error.FileNotFound) return;
+        return err;
+    };
+    defer file.close();
+    const contents = try file.readToEndAlloc(config.allocator, 64 * 1024);
+    defer config.allocator.free(contents);
+    try parseSlice(config, contents, overwrite);
+}
+
+/// Parses a `.nayrrc` byte slice and merges into `config`.
+pub fn parseSlice(config: *Config, src: []const u8, overwrite: bool) !void {
+    var parser = NayrrcParser{
+        .src = src,
+        .pos = 0,
+        .allocator = config.allocator,
+    };
+    try parser.parse(config, overwrite);
+}
+
+// ============================================================================
+// Parser
+// ============================================================================
+
+const NayrrcParser = struct {
+    src: []const u8,
+    pos: usize,
+    allocator: std.mem.Allocator,
+
+    /// Current section being parsed (e.g. "registry.private", "git").
+    current_section: []const u8 = "",
+
+    /// Registry name being built (e.g. "private" when section = "registry.private").
+    current_registry_name: ?[]const u8 = null,
+    current_registry: ?RegistryConfig = null,
+
+    fn atEnd(self: *const NayrrcParser) bool {
+        return self.pos >= self.src.len;
+    }
+
+    fn parse(self: *NayrrcParser, config: *Config, overwrite: bool) !void {
+        while (!self.atEnd()) {
+            const line = self.readLine();
+            const trimmed = std.mem.trim(u8, line, " \t\r");
+
+            if (trimmed.len == 0 or trimmed[0] == '#') continue;
+
+            if (trimmed[0] == '[') {
+                // Flush previous registry section before switching.
+                try self.flushRegistry(config);
+                self.current_section = try self.parseSection(trimmed);
+                continue;
+            }
+
+            const eq = std.mem.indexOfScalar(u8, trimmed, '=') orelse continue;
+            const key = std.mem.trim(u8, trimmed[0..eq], " \t");
+            const raw_val = std.mem.trim(u8, trimmed[eq + 1 ..], " \t");
+
+            if (std.mem.startsWith(u8, self.current_section, "registry.")) {
+                const reg_name = self.current_section["registry.".len..];
+                try self.applyRegistryKey(config, reg_name, key, raw_val, overwrite);
+            } else if (std.mem.eql(u8, self.current_section, "git")) {
+                try applyGitKey(config, key, raw_val, overwrite, self.allocator);
+            }
+        }
+        // Flush final registry section.
+        try self.flushRegistry(config);
+    }
+
+    fn readLine(self: *NayrrcParser) []const u8 {
+        const start = self.pos;
+        while (self.pos < self.src.len and self.src[self.pos] != '\n') self.pos += 1;
+        const end = self.pos;
+        if (self.pos < self.src.len) self.pos += 1;
+        return self.src[start..end];
+    }
+
+    fn parseSection(self: *NayrrcParser, line: []const u8) ![]const u8 {
+        const close = std.mem.indexOfScalar(u8, line, ']') orelse return error.MalformedSection;
+        return self.allocator.dupe(u8, std.mem.trim(u8, line[1..close], " "));
+    }
+
+    fn applyRegistryKey(
+        self: *NayrrcParser,
+        config: *Config,
+        reg_name: []const u8,
+        key: []const u8,
+        raw_val: []const u8,
+        overwrite: bool,
+    ) !void {
+        // Lazily create the registry config for this section.
+        if (self.current_registry == null) {
+            self.current_registry = RegistryConfig{
+                .name = try self.allocator.dupe(u8, reg_name),
+                .url = "",
+            };
+        }
+
+        const val = stripQuotes(raw_val);
+
+        if (std.mem.eql(u8, key, "url")) {
+            if (overwrite or self.current_registry.?.url.len == 0) {
+                self.current_registry.?.url = try self.allocator.dupe(u8, val);
+            }
+        } else if (std.mem.eql(u8, key, "type")) {
+            if (std.mem.eql(u8, val, "verdaccio")) {
+                self.current_registry.?.registry_type = .verdaccio;
+            } else {
+                self.current_registry.?.registry_type = .npm;
+            }
+        } else if (std.mem.eql(u8, key, "auto-sync")) {
+            self.current_registry.?.auto_sync = std.mem.eql(u8, val, "true");
+        } else if (std.mem.eql(u8, key, "auth-token-env")) {
+            self.current_registry.?.auth_token_env = try self.allocator.dupe(u8, val);
+        } else if (std.mem.eql(u8, key, "scopes")) {
+            // Parse an inline array: `scopes = ["@lemon", "@luckymaker"]`
+            self.current_registry.?.scopes = try parseStringArray(self.allocator, val);
+        }
+
+        _ = config;
+    }
+
+    fn flushRegistry(self: *NayrrcParser, config: *Config) !void {
+        const reg = self.current_registry orelse return;
+        const name = try self.allocator.dupe(u8, reg.name);
+        try config.private_registries.put(self.allocator, name, reg);
+        self.current_registry = null;
+    }
+};
+
+// ============================================================================
+// Git section handler
+// ============================================================================
+
+fn applyGitKey(
+    config: *Config,
+    key: []const u8,
+    raw_val: []const u8,
+    overwrite: bool,
+    allocator: std.mem.Allocator,
+) !void {
+    const val = stripQuotes(raw_val);
+
+    if (std.mem.eql(u8, key, "pin-hash")) {
+        if (overwrite) config.git_pin_hash = std.mem.eql(u8, val, "true");
+    } else if (std.mem.eql(u8, key, "no-pin-orgs")) {
+        if (overwrite or config.git_no_pin_orgs.len == 0) {
+            config.git_no_pin_orgs = try parseStringArray(allocator, val);
+        }
+    } else if (std.mem.eql(u8, key, "no-pin-repos")) {
+        if (overwrite or config.git_no_pin_repos.len == 0) {
+            config.git_no_pin_repos = try parseStringArray(allocator, val);
+        }
+    }
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/// Parses an inline TOML-style string array: `["a", "b", "c"]`.
+fn parseStringArray(allocator: std.mem.Allocator, s: []const u8) ![]const []const u8 {
+    const trimmed = std.mem.trim(u8, s, " \t");
+    if (trimmed.len < 2 or trimmed[0] != '[') return &.{};
+
+    var list = std.ArrayList([]const u8).init(allocator);
+    var i: usize = 1;
+    while (i < trimmed.len) {
+        // Skip whitespace and commas.
+        while (i < trimmed.len and (trimmed[i] == ' ' or trimmed[i] == ',' or trimmed[i] == '\t')) i += 1;
+        if (i >= trimmed.len or trimmed[i] == ']') break;
+
+        // Read a quoted string.
+        if (trimmed[i] == '"') {
+            i += 1;
+            const start = i;
+            while (i < trimmed.len and trimmed[i] != '"') i += 1;
+            const item = trimmed[start..i];
+            try list.append(try allocator.dupe(u8, item));
+            if (i < trimmed.len) i += 1; // skip closing "
+        } else {
+            // Bare word (no quotes).
+            const start = i;
+            while (i < trimmed.len and trimmed[i] != ',' and trimmed[i] != ']') i += 1;
+            const item = std.mem.trim(u8, trimmed[start..i], " \t");
+            if (item.len > 0) try list.append(try allocator.dupe(u8, item));
+        }
+    }
+    return list.toOwnedSlice();
+}
+
+/// Strips surrounding double-quotes from a value.
+fn stripQuotes(s: []const u8) []const u8 {
+    const t = std.mem.trim(u8, s, " \t");
+    if (t.len >= 2 and t[0] == '"' and t[t.len - 1] == '"') return t[1 .. t.len - 1];
+    return t;
+}
