@@ -87,7 +87,7 @@ pub fn link(
     }
 
     // Remove extraneous entries (packages present in node_modules but not
-    // in the hoisted layout — they were removed from package.json).
+    // in the hoisted layout - they were removed from package.json).
     try removeExtraneous(allocator, node_modules, &installed, writer);
 }
 

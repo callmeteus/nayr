@@ -5,3 +5,5 @@ yarn-error*
 *.log
 
 .zig-cache
+zig-out/lib
+zig-out/include

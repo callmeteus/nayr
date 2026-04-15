@@ -27,7 +27,7 @@ pub fn run(
     defer allocator.free(lockfile_path);
 
     const lock = nayr_fmt.parseFile(allocator, lockfile_path) catch {
-        writer.emit(.{ .err = "no lockfile found — run nayr install first" });
+        writer.emit(.{ .err = "no lockfile found - run nayr install first" });
         return;
     };
 

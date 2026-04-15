@@ -61,6 +61,24 @@ pub fn run(
     const opts = parseInstallOpts(args, config);
     const start = std.time.milliTimestamp();
 
+    // Validate that a package.json exists in the target directory before
+    // doing any work. This produces a clear message instead of a cryptic
+    // FileNotFound later in the pipeline.
+    const pkg_json_path = try std.fs.path.join(allocator, &.{ cwd, "package.json" });
+    defer allocator.free(pkg_json_path);
+    std.fs.accessAbsolute(pkg_json_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            const stderr = std.io.getStdErr().writer();
+            stderr.print(
+                "error: No package.json found in {s}\n" ++
+                    "       Make sure you are inside a Node.js project directory.\n",
+                .{cwd},
+            ) catch {};
+            std.process.exit(1);
+        },
+        else => return err,
+    };
+
     // Fast path: integrity check.
     if (!opts.force and !opts.check_files) {
         if (try integrity_mod.isUpToDate(allocator, cwd)) {

@@ -71,7 +71,7 @@ pub fn run(
 
     writer.emit(.{ .info = try std.fmt.allocPrint(
         allocator,
-        "Audit complete (level: {s}) — no vulnerabilities found.",
+        "Audit complete (level: {s}) - no vulnerabilities found.",
         .{min_level},
     ) });
 }

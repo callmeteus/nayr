@@ -1,15 +1,15 @@
 //! `nayr login` / `nayr logout` Commands
 //!
-//! Multi-registry authentication — authenticates against one or more
+//! Multi-registry authentication - authenticates against one or more
 //! registries in a single invocation (unlike Yarn Classic which supports
 //! only one registry per login).
 //!
 //! Usage:
-//!   nayr login                                         — login to default registry
-//!   nayr login --registry http://npm.arpa              — login to a specific registry
+//!   nayr login                                         - login to default registry
+//!   nayr login --registry http://npm.arpa              - login to a specific registry
 //!   nayr login --registry http://npm.arpa --registry https://npm.pkg.github.com
-//!   nayr login --registry private                      — alias from .nayrrc
-//!   nayr login --list                                  — list active sessions
+//!   nayr login --registry private                      - alias from .nayrrc
+//!   nayr login --list                                  - list active sessions
 //!   nayr logout --registry http://npm.arpa
 //!   nayr logout --all
 

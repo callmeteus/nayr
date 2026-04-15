@@ -18,7 +18,7 @@ pub const Version = struct {
     patch: u32,
     /// Pre-release identifier, e.g. "beta.1", "rc.2". Empty slice = stable.
     pre: []const u8 = "",
-    /// Build metadata — ignored in comparisons per SemVer spec.
+    /// Build metadata - ignored in comparisons per SemVer spec.
     build: []const u8 = "",
 
     /// Parses a version string. Does not allocate; slices point into `s`.

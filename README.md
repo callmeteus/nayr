@@ -15,7 +15,7 @@ yarn global add nayr
 npm install -g nayr
 ```
 
-## Development — Linking locally for testing
+## Development - Linking locally for testing
 
 When iterating on nayr itself, you can link the binary directly into the active node's bin directory so `nayr` resolves from anywhere without PATH changes.
 
@@ -23,7 +23,7 @@ When iterating on nayr itself, you can link the binary directly into the active 
 > Run `yarn build` first if you haven't already.
 
 ```sh
-# Link nayr to the active nvm node bin (idempotent — safe to re-run)
+# Link nayr to the active nvm node bin (idempotent - safe to re-run)
 source ~/.nvm/nvm.sh && yarn link:dev
 
 # Verify

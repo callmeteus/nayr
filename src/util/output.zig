@@ -3,9 +3,9 @@
 //! All nayr output passes through this module. No command writes to stdout
 //! directly. This enables three rendering modes selected by --format:
 //!
-//!   tui  — rich TUI with progress bars, spinners, ANSI colours (default on TTY)
-//!   text — plain one-line-per-event (default when stdout is a pipe)
-//!   json — NDJSON; one JSON object per line (machine-readable)
+//!   tui  - rich TUI with progress bars, spinners, ANSI colours (default on TTY)
+//!   text - plain one-line-per-event (default when stdout is a pipe)
+//!   json - NDJSON; one JSON object per line (machine-readable)
 //!
 //! The auto-detection logic: if stdout is a TTY → tui, otherwise → text.
 //! --format always overrides auto-detection.
@@ -101,7 +101,7 @@ pub const Event = union(enum) {
 pub const Writer = struct {
     /// Opaque pointer to the concrete implementation.
     ptr: *anyopaque,
-    /// Vtable — set at construction time depending on the selected format.
+    /// Vtable - set at construction time depending on the selected format.
     vtable: *const VTable,
 
     pub const VTable = struct {
@@ -133,7 +133,7 @@ pub const Writer = struct {
 /// Creates a Writer for the given format, allocating any required state.
 ///
 /// ## Parameters
-/// - `allocator`: Arena or GPA — writer state lives for the CLI invocation.
+/// - `allocator`: Arena or GPA - writer state lives for the CLI invocation.
 /// - `format`: The rendering format to use.
 /// - `verbose`: Whether to emit verbose (debug-level) events.
 pub fn createWriter(allocator: std.mem.Allocator, format: Format, verbose: bool) !Writer {
@@ -148,7 +148,7 @@ pub fn createWriter(allocator: std.mem.Allocator, format: Format, verbose: bool)
         },
         .text => {
             const impl = try allocator.create(TextWriter);
-            impl.* = TextWriter.init(verbose);
+            impl.* = TextWriter.init(allocator, verbose);
             return Writer{
                 .ptr = impl,
                 .vtable = &TextWriter.vtable,
@@ -156,7 +156,7 @@ pub fn createWriter(allocator: std.mem.Allocator, format: Format, verbose: bool)
         },
         .json => {
             const impl = try allocator.create(JsonWriter);
-            impl.* = JsonWriter.init(verbose);
+            impl.* = JsonWriter.init(allocator, verbose);
             return Writer{
                 .ptr = impl,
                 .vtable = &JsonWriter.vtable,
@@ -288,7 +288,10 @@ const TuiWriter = struct {
         self.stdout.sync() catch {};
     }
 
-    fn deinitFn(_: *anyopaque) void {}
+    fn deinitFn(ptr: *anyopaque) void {
+        const self: *TuiWriter = @ptrCast(@alignCast(ptr));
+        self.allocator.destroy(self);
+    }
 };
 
 // ============================================================================
@@ -296,6 +299,7 @@ const TuiWriter = struct {
 // ============================================================================
 
 const TextWriter = struct {
+    allocator: std.mem.Allocator,
     verbose: bool,
     stdout: std.fs.File,
 
@@ -305,8 +309,8 @@ const TextWriter = struct {
         .deinit = deinitFn,
     };
 
-    fn init(verbose: bool) TextWriter {
-        return .{ .verbose = verbose, .stdout = std.io.getStdOut() };
+    fn init(allocator: std.mem.Allocator, verbose: bool) TextWriter {
+        return .{ .allocator = allocator, .verbose = verbose, .stdout = std.io.getStdOut() };
     }
 
     fn emit(ptr: *anyopaque, event: Event) void {
@@ -353,7 +357,10 @@ const TextWriter = struct {
         self.stdout.sync() catch {};
     }
 
-    fn deinitFn(_: *anyopaque) void {}
+    fn deinitFn(ptr: *anyopaque) void {
+        const self: *TextWriter = @ptrCast(@alignCast(ptr));
+        self.allocator.destroy(self);
+    }
 };
 
 // ============================================================================
@@ -361,6 +368,7 @@ const TextWriter = struct {
 // ============================================================================
 
 const JsonWriter = struct {
+    allocator: std.mem.Allocator,
     verbose: bool,
     stdout: std.fs.File,
 
@@ -370,8 +378,8 @@ const JsonWriter = struct {
         .deinit = deinitFn,
     };
 
-    fn init(verbose: bool) JsonWriter {
-        return .{ .verbose = verbose, .stdout = std.io.getStdOut() };
+    fn init(allocator: std.mem.Allocator, verbose: bool) JsonWriter {
+        return .{ .allocator = allocator, .verbose = verbose, .stdout = std.io.getStdOut() };
     }
 
     fn emit(ptr: *anyopaque, event: Event) void {
@@ -436,9 +444,12 @@ const JsonWriter = struct {
         self.stdout.sync() catch {};
     }
 
-    fn deinitFn(_: *anyopaque) void {}
+    fn deinitFn(ptr: *anyopaque) void {
+        const self: *JsonWriter = @ptrCast(@alignCast(ptr));
+        self.allocator.destroy(self);
+    }
 
-    /// Wraps a string in JSON double-quotes. Does NOT escape interior chars —
+    /// Wraps a string in JSON double-quotes. Does NOT escape interior chars -
     /// a full implementation would escape \", \\, and control characters.
     inline fn jsonStr(s: []const u8) []const u8 {
         // TODO: return properly escaped JSON string literal.

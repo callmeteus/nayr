@@ -1,4 +1,4 @@
-//! Semver Engine — Public API
+//! Semver Engine - Public API
 //!
 //! Provides high-level functions over the semver types and range modules.
 //! This is the entry point imported by the resolver.

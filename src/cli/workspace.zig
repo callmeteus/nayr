@@ -1,9 +1,9 @@
 //! `nayr workspace` and `nayr workspaces` Commands
 //!
 //! Workspace-level operations:
-//!   nayr workspace <name> <command>  — run a command in a specific workspace
-//!   nayr workspaces info             — list all workspaces and their versions
-//!   nayr workspaces run <script>     — run a script in all workspaces
+//!   nayr workspace <name> <command>  - run a command in a specific workspace
+//!   nayr workspaces info             - list all workspaces and their versions
+//!   nayr workspaces run <script>     - run a script in all workspaces
 
 const std = @import("std");
 const output = @import("../util/output.zig");

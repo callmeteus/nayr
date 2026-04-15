@@ -110,7 +110,7 @@ pub const Lockfile = struct {
 
     /// Frees all memory owned by the lockfile.
     pub fn deinit(self: *Lockfile, allocator: std.mem.Allocator) void {
-        // Keys of pattern_map are borrowed from entries[].patterns — do not free.
+        // Keys of pattern_map are borrowed from entries[].patterns - do not free.
         self.pattern_map.deinit(allocator);
         for (self.entries) |*e| e.deinit(allocator);
         allocator.free(self.entries);

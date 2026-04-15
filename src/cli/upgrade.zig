@@ -31,7 +31,7 @@ pub fn run(
 
     // When upgrading, force re-resolution (ignore lockfile hits).
     // For `--latest`, we would also strip ranges and reset to `*` before
-    // resolving — implemented as a future enhancement.
+    // resolving - implemented as a future enhancement.
     const install_args: []const []const u8 = if (latest)
         &[_][]const u8{"--force"}
     else

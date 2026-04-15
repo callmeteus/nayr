@@ -11,7 +11,7 @@
 //!   3. On completion, an atomic `rename()` moves to the final path.
 //!   4. Rename is atomic on POSIX (NTFS: MoveFileExW with REPLACE_EXISTING).
 //!   5. Two concurrent processes downloading the same version both rename
-//!      successfully — the second overwrites the first with identical content
+//!      successfully - the second overwrites the first with identical content
 //!      (deterministic for the same tarball). No data corruption possible.
 //!
 //! Readers check for directory existence with a simple stat() call. If the
@@ -96,7 +96,7 @@ pub const Cache = struct {
     /// Returns true when the given package version is already in cache and
     /// its integrity file is present.
     ///
-    /// A missing integrity file means the package was partially extracted —
+    /// A missing integrity file means the package was partially extracted -
     /// treat as a cache miss so it gets re-downloaded.
     pub fn has(
         self: *const Cache,
@@ -181,7 +181,7 @@ pub const Cache = struct {
 
         // Atomic rename: this is the only write to the final location.
         // If another process already placed a complete directory here,
-        // we overwrite it — both have identical contents (deterministic).
+        // we overwrite it - both have identical contents (deterministic).
         platform.atomicRename(tmp_dir_path, final_dir) catch |err| {
             // PathAlreadyExists can occur on some platforms if rename cannot
             // replace a non-empty directory. In that case we just clean up

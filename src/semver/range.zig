@@ -3,19 +3,19 @@
 //! Parses npm-compatible version range strings and evaluates whether a given
 //! Version satisfies a range. Supports the full npm semver range grammar:
 //!
-//!   ^1.2.3   — compatible with 1.2.3 (same major, >= minor.patch)
-//!   ~1.2.3   — approximately 1.2.3 (same major.minor, >= patch)
-//!   >=1.2.3  — greater than or equal
-//!   >1.2.3   — strictly greater
-//!   <=1.2.3  — less than or equal
-//!   <1.2.3   — strictly less
-//!   1.2.3    — exact match (implicitly =1.2.3)
-//!   *        — any version
-//!   1.x      — any 1.y.z
-//!   1.2.x    — any 1.2.z
-//!   1.2.3 - 2.0.0   — hyphen range (inclusive on both ends)
-//!   >=1.0.0 <2.0.0  — AND of two comparators
-//!   ^1.0.0 || ^2.0.0 — OR of two comparator sets
+//!   ^1.2.3   - compatible with 1.2.3 (same major, >= minor.patch)
+//!   ~1.2.3   - approximately 1.2.3 (same major.minor, >= patch)
+//!   >=1.2.3  - greater than or equal
+//!   >1.2.3   - strictly greater
+//!   <=1.2.3  - less than or equal
+//!   <1.2.3   - strictly less
+//!   1.2.3    - exact match (implicitly =1.2.3)
+//!   *        - any version
+//!   1.x      - any 1.y.z
+//!   1.2.x    - any 1.2.z
+//!   1.2.3 - 2.0.0   - hyphen range (inclusive on both ends)
+//!   >=1.0.0 <2.0.0  - AND of two comparators
+//!   ^1.0.0 || ^2.0.0 - OR of two comparator sets
 
 const std = @import("std");
 const types = @import("types.zig");
@@ -217,7 +217,7 @@ fn expandSugar(allocator: std.mem.Allocator, token: []const u8) ![]const Compara
 
     // Bare version string: exact match.
     const v = Version.parse(token) catch {
-        // Unknown token — treat as "any" and continue gracefully.
+        // Unknown token - treat as "any" and continue gracefully.
         try list.append(.{ .op = .gte, .version = .{ .major = 0, .minor = 0, .patch = 0 } });
         return list.toOwnedSlice();
     };
@@ -255,7 +255,7 @@ fn parseXRange(allocator: std.mem.Allocator, token: []const u8) ![]const Compara
     }
 
     const major = parts[0] orelse {
-        // "x" or "*" — match anything.
+        // "x" or "*" - match anything.
         try list.append(.{ .op = .gte, .version = .{ .major = 0, .minor = 0, .patch = 0 } });
         return list.toOwnedSlice();
     };

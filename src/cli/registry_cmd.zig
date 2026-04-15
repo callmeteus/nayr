@@ -4,11 +4,11 @@
 //! Replaces the standalone `verc` npm package.
 //!
 //! Sub-commands:
-//!   nayr registry sync [name]            — sync scopes from configured registries
-//!   nayr registry add <name> <url>       — add a registry to .nayrrc
-//!   nayr registry remove <name>          — remove a registry from .nayrrc
-//!   nayr registry list                   — list configured registries
-//!   nayr registry status                 — show current state
+//!   nayr registry sync [name]            - sync scopes from configured registries
+//!   nayr registry add <name> <url>       - add a registry to .nayrrc
+//!   nayr registry remove <name>          - remove a registry from .nayrrc
+//!   nayr registry list                   - list configured registries
+//!   nayr registry status                 - show current state
 
 const std = @import("std");
 const output = @import("../util/output.zig");

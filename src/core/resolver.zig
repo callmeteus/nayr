@@ -230,7 +230,7 @@ pub fn resolve(
         if (opts.frozen_lockfile) return error.FrozenLockfileChanged;
 
         const meta = client.fetchMetadata(req.name) catch |err| {
-            if (req.optional) continue; // optional dep — skip on failure
+            if (req.optional) continue; // optional dep - skip on failure
             return err;
         };
         defer {

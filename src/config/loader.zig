@@ -6,10 +6,10 @@
 //! Priority (highest wins):
 //!   1. Project `.npmrc`   (cwd)
 //!   2. User `.npmrc`      (~/.npmrc)
-//!   3. Global `.npmrc`    (/etc/npmrc — Linux only)
-//!   4. Project `.yarnrc`  — overrides `.npmrc` for Yarn-specific keys
+//!   3. Global `.npmrc`    (/etc/npmrc - Linux only)
+//!   4. Project `.yarnrc`  - overrides `.npmrc` for Yarn-specific keys
 //!   5. User `.yarnrc`     (~/.yarnrc)
-//!   6. Project `.nayrrc`  — nayr-exclusive settings
+//!   6. Project `.nayrrc`  - nayr-exclusive settings
 //!   7. User `.nayrrc`     (~/.nayrrc)
 //!
 //! In practice, project-level files are the most specific. We parse from

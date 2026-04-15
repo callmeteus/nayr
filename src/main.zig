@@ -1,4 +1,4 @@
-//! nayr — a fast, lock-free package manager for the Node.js ecosystem.
+//! nayr - a fast, lock-free package manager for the Node.js ecosystem.
 //!
 //! nayr is a drop-in replacement for Yarn Classic v1, written in Zig for
 //! maximum performance. It supports:
@@ -28,9 +28,27 @@ pub fn main() !void {
 
     // Dispatch to the CLI router.
     cli.run(allocator, args) catch |err| {
-        // Top-level error handler: print to stderr and exit with code 1.
         const stderr = std.io.getStdErr().writer();
-        stderr.print("error: {s}\n", .{@errorName(err)}) catch {};
+        const msg = switch (err) {
+            error.NotYarnV1Lockfile =>
+                "yarn.lock found but it is not a Yarn v1 lockfile (Yarn Berry / PnP is not supported).",
+            error.FileNotFound =>
+                "No package.json found in the current directory. Run nayr inside a Node.js project.",
+            error.FrozenLockfileChanged =>
+                "--frozen-lockfile is set but the lockfile would need to be updated.",
+            error.OutOfMemory =>
+                "Out of memory.",
+            error.AccessDenied =>
+                "Permission denied. Check file/directory permissions.",
+            error.InvalidCharacter, error.UnexpectedEndOfInput =>
+                "package.json contains invalid JSON. Fix the syntax and try again.",
+            else => null,
+        };
+        if (msg) |m| {
+            stderr.print("error: {s}\n", .{m}) catch {};
+        } else {
+            stderr.print("error: {s}\n", .{@errorName(err)}) catch {};
+        }
         std.process.exit(1);
     };
 }

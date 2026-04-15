@@ -2,18 +2,15 @@
 //!
 //! Builds the nayr binary for the current host or cross-compiles for
 //! any supported target. Supports three output modes:
-//!   zig build           — debug binary
-//!   zig build -Doptimize=ReleaseFast  — optimized binary
-//!   zig build test      — run all tests
-//!   zig build docs      — generate HTML documentation
+//!   zig build                        - debug binary
+//!   zig build -Doptimize=ReleaseFast - optimized binary
+//!   zig build test                   - run all tests
+//!   zig build cross                  - cross-compile for all targets
 
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    // Allow the user to choose the optimization level (default: Debug).
     const optimize = b.standardOptimizeOption(.{});
-
-    // Allow the user to choose the target triple (default: native host).
     const target = b.standardTargetOptions(.{});
 
     // -------------------------------------------------------------------------
@@ -43,8 +40,6 @@ pub fn build(b: *std.Build) void {
     // -------------------------------------------------------------------------
     const test_step = b.step("test", "Run all unit tests");
 
-    // The test runner root is `tests.zig` at the workspace root, so all
-    // test sub-files may use `@import("src/...")` relative to the workspace.
     const unit_tests = b.addTest(.{
         .name = "nayr_tests",
         .root_source_file = b.path("tests.zig"),
@@ -54,7 +49,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
     // -------------------------------------------------------------------------
-    // Cross-compilation targets
+    // Cross-compilation targets: `zig build cross`
     // -------------------------------------------------------------------------
     const cross_targets = [_]std.Target.Query{
         .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu },

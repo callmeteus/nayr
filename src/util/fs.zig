@@ -104,9 +104,9 @@ pub fn cleanStaleTempFiles(allocator: std.mem.Allocator, tmp_dir: []const u8, ma
 /// Returns true when `path` matches the given glob `pattern`.
 ///
 /// Supports:
-///   - `*`  — matches any sequence of characters within a single path segment
-///   - `**` — matches any sequence of path segments (zero or more)
-///   - `?`  — matches any single character
+///   - `*`  - matches any sequence of characters within a single path segment
+///   - `**` - matches any sequence of path segments (zero or more)
+///   - `?`  - matches any single character
 ///
 /// ## Parameters
 /// - `pattern`: Glob pattern (e.g. "packages/*", "**\/node_modules\/**").

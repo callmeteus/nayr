@@ -3,13 +3,13 @@
 //! Manages the local package link registry at `~/.nayr/links/`.
 //!
 //! Commands:
-//!   nayr link              — register the current package
-//!   nayr link <name>       — create a node_modules symlink to a registered pkg
-//!   nayr unlink [name]     — remove a registration or node_modules link
-//!   nayr mklink [glob]     — register multiple packages via glob
-//!   nayr autolink          — auto-link all registered packages present in pkg.json
-//!   nayr link --list       — list all registered links
-//!   nayr link --clean      — remove broken links
+//!   nayr link              - register the current package
+//!   nayr link <name>       - create a node_modules symlink to a registered pkg
+//!   nayr unlink [name]     - remove a registration or node_modules link
+//!   nayr mklink [glob]     - register multiple packages via glob
+//!   nayr autolink          - auto-link all registered packages present in pkg.json
+//!   nayr link --list       - list all registered links
+//!   nayr link --clean      - remove broken links
 
 const std = @import("std");
 const platform = @import("../util/platform.zig");

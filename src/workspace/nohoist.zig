@@ -9,8 +9,8 @@
 //!   `/_project_/<workspace-name>/<package-name>[/<nested-dep>...]`
 //!
 //! Examples:
-//!   `**/react-native/**` — never hoist any react-native dep anywhere
-//!   `@scope/pkg`         — never hoist this specific scoped package
+//!   `**/react-native/**` - never hoist any react-native dep anywhere
+//!   `@scope/pkg`         - never hoist this specific scoped package
 
 const std = @import("std");
 const fs_util = @import("../util/fs.zig");

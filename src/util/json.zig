@@ -65,7 +65,7 @@ pub const PackageJson = struct {
     /// with the package name) or an object (multiple named binaries).
     pub const BinField = union(enum) {
         none,
-        /// Single binary: `"bin": "./cli.js"` — name = package name.
+        /// Single binary: `"bin": "./cli.js"` - name = package name.
         single: []const u8,
         /// Multiple binaries: `"bin": { "cmd": "./cmd.js" }`.
         map: StringMap,

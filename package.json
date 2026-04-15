@@ -4,5 +4,18 @@
   "version": "2.0.0",
   "license": "MIT",
   "repository": "https://github.com/callmeteus/nayr",
-  "author": "Gio <gio@techtail.net>"
+  "author": "Gio <gio@techtail.net>",
+  "bin": {
+    "nayr": "./bin/nayr"
+  },
+  "files": [
+    "bin",
+    "zig-out/bin"
+  ],
+  "scripts": {
+    "build": "zig build -Doptimize=ReleaseFast",
+    "build:debug": "zig build",
+    "link:dev": "sh bin/link-dev",
+    "link:dev:release": "sh bin/link-dev --release"
+  }
 }

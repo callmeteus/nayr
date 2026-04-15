@@ -6,8 +6,8 @@
 //!
 //! Supported sections:
 //!
-//!   [registry.<name>]    — private registry configuration
-//!   [git]                — git dependency hash pinning behaviour
+//!   [registry.<name>]    - private registry configuration
+//!   [git]                - git dependency hash pinning behaviour
 //!
 //! Example:
 //!

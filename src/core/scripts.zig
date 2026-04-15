@@ -2,7 +2,7 @@
 //!
 //! Executes npm lifecycle scripts (preinstall, install, postinstall) for
 //! packages that declare them. Scripts run sequentially in dependency order
-//! — this is a requirement of the npm ecosystem because some scripts expect
+//! - this is a requirement of the npm ecosystem because some scripts expect
 //! their dependencies to already be installed.
 
 const std = @import("std");

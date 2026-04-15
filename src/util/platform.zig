@@ -115,7 +115,7 @@ pub fn symlinkOrJunction(target: []const u8, link_path: []const u8) !void {
 /// - `dest`: Destination path for the hard link or copy.
 pub fn hardlinkOrCopy(src: []const u8, dest: []const u8) !void {
     std.posix.link(src, dest) catch {
-        // Hard link failed (e.g., cross-device) — copy the file instead.
+        // Hard link failed (e.g., cross-device) - copy the file instead.
         try copyFile(src, dest);
     };
 }
@@ -276,7 +276,7 @@ fn copyFileLinux(src: []const u8, dest: []const u8) !void {
 /// Windows-specific junction point creation (directory symlink without UAC).
 fn createJunction(target: []const u8, link_path: []const u8) !void {
     // Junction points are Windows-only and are created via DeviceIoControl.
-    // This is a simplified implementation — in production, use ReparsePoint API.
+    // This is a simplified implementation - in production, use ReparsePoint API.
     _ = target;
     _ = link_path;
     return error.JunctionNotImplemented;

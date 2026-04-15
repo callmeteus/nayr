@@ -58,7 +58,7 @@ pub fn hoist(
     while (it.next()) |p| try pkgs.append(p);
 
     // -------------------------------------------------------------------------
-    // Phase 1: Prepass — count occurrences of each (name, version) pair.
+    // Phase 1: Prepass - count occurrences of each (name, version) pair.
     // -------------------------------------------------------------------------
     var version_counts = std.StringHashMapUnmanaged(VersionCount){};
     defer version_counts.deinit(allocator);
@@ -75,7 +75,7 @@ pub fn hoist(
     }
 
     // -------------------------------------------------------------------------
-    // Phase 2: Seeding — seed the most popular version of each package name
+    // Phase 2: Seeding - seed the most popular version of each package name
     // at the root level.
     // -------------------------------------------------------------------------
     // For each package name, find the version with the highest count.

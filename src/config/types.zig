@@ -31,7 +31,7 @@ pub const RegistryConfig = struct {
     name: []const u8,
     /// Registry base URL.
     url: []const u8,
-    /// Registry type — drives auto-discovery strategy.
+    /// Registry type - drives auto-discovery strategy.
     registry_type: RegistryType = .npm,
     /// Whether to run `nayr registry sync` automatically after install.
     auto_sync: bool = false,
@@ -41,9 +41,9 @@ pub const RegistryConfig = struct {
     scopes: []const []const u8 = &.{},
 
     pub const RegistryType = enum {
-        /// Verdaccio instance — uses `/-/verdaccio/data/packages` API.
+        /// Verdaccio instance - uses `/-/verdaccio/data/packages` API.
         verdaccio,
-        /// Any npm-compatible registry — uses `/-/v1/search` API.
+        /// Any npm-compatible registry - uses `/-/v1/search` API.
         npm,
     };
 };
@@ -123,9 +123,46 @@ pub const Config = struct {
 
     /// Frees all memory owned by the Config.
     pub fn deinit(self: *Config) void {
+        // Free scoped_registries keys and values (all duped strings).
+        var sr_it = self.scoped_registries.iterator();
+        while (sr_it.next()) |kv| {
+            self.allocator.free(kv.key_ptr.*);
+            self.allocator.free(kv.value_ptr.*);
+        }
         self.scoped_registries.deinit(self.allocator);
+
+        // Free auth entry strings.
+        for (self.auth_entries.items) |*entry| {
+            self.allocator.free(entry.host);
+            if (entry.token) |t| self.allocator.free(t);
+            if (entry.basic) |b| self.allocator.free(b);
+        }
         self.auth_entries.deinit();
+
+        // Free private_registries keys and url strings.
+        var pr_it = self.private_registries.iterator();
+        while (pr_it.next()) |kv| {
+            self.allocator.free(kv.key_ptr.*);
+            self.allocator.free(kv.value_ptr.*.url);
+        }
         self.private_registries.deinit(self.allocator);
+
+        // Free optional string fields.
+        if (self.email) |s| self.allocator.free(s);
+        if (self.username) |s| self.allocator.free(s);
+        if (self.cache_folder) |s| self.allocator.free(s);
+
+        // Free git_no_pin slices (only if they were allocated, not default &.{}).
+        for (self.git_no_pin_orgs) |s| self.allocator.free(s);
+        if (self.git_no_pin_orgs.len > 0) self.allocator.free(self.git_no_pin_orgs);
+        for (self.git_no_pin_repos) |s| self.allocator.free(s);
+        if (self.git_no_pin_repos.len > 0) self.allocator.free(self.git_no_pin_repos);
+
+        // Free registry URL if it was duped (not the default literal).
+        const default_registry = "https://registry.npmjs.org";
+        if (!std.mem.eql(u8, self.registry, default_registry)) {
+            self.allocator.free(self.registry);
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -164,7 +201,7 @@ pub const Config = struct {
     pub fn getAuthHeader(self: *const Config, registry_url: []const u8) ?[]const u8 {
         const entry = self.findAuthEntry(registry_url) orelse return null;
         if (entry.token) |tok| {
-            // Construct "Bearer <tok>" — the header is stored as a pre-formatted
+            // Construct "Bearer <tok>" - the header is stored as a pre-formatted
             // string in a static buffer on the stack (small, safe).
             _ = tok;
             return entry.token; // caller wraps in "Bearer " prefix

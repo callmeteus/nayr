@@ -1,6 +1,6 @@
 //! Package Publishing
 //!
-//! Implements `nayr publish` — creates a tarball from the current directory
+//! Implements `nayr publish` - creates a tarball from the current directory
 //! and uploads it to the registry using the npm publish protocol.
 
 const std = @import("std");
@@ -42,7 +42,7 @@ pub fn publish(
 
     if (manifest.private) {
         std.io.getStdErr().writer().print(
-            "warning: package.json has \"private\": true — skipping publish\n",
+            "warning: package.json has \"private\": true - skipping publish\n",
             .{},
         ) catch {};
         return error.PackageIsPrivate;

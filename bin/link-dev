@@ -1,0 +1,83 @@
+#!/bin/sh
+# link-dev - builds the debug nayr binary and links it globally for development.
+#
+# Usage: ./bin/link-dev [--release]
+#
+# Creates a symlink at ~/.local/bin/nayr pointing to the freshly built binary
+# so you can run `nayr` from anywhere in the terminal without reinstalling.
+#
+# Pass --release to build with -Doptimize=ReleaseFast instead of debug mode.
+
+set -e
+
+SELF="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || "$0")"
+NAYR_ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+LINK_DIR="$HOME/.local/bin"
+
+OPTIMIZE=""
+if [ "$1" = "--release" ]; then
+    OPTIMIZE="-Doptimize=ReleaseFast"
+    echo "nayr link-dev: building release binary..."
+else
+    echo "nayr link-dev: building debug binary..."
+fi
+
+# Find Zig - prefer the explicitly installed version over any IDE-injected one.
+# The Cursor IDE may inject a newer Zig into PATH; we always want the project's
+# pinned version (0.14.1) from ~/.local/bin/zig if it exists.
+ZIG_BIN=""
+for candidate in "$HOME/.local/bin/zig" "$HOME/.local/zig/zig" "$(command -v zig 2>/dev/null)"; do
+    if [ -f "$candidate" ] && [ -x "$candidate" ]; then
+        ZIG_BIN="$candidate"
+        break
+    fi
+done
+
+if [ -z "$ZIG_BIN" ]; then
+    echo "link-dev: error: Zig not found. Install it to ~/.local/bin/zig." >&2
+    exit 1
+fi
+
+ZIG_VERSION="$("$ZIG_BIN" version 2>/dev/null || echo unknown)"
+echo "nayr link-dev: using Zig $ZIG_VERSION at $ZIG_BIN"
+
+# Build.
+(cd "$NAYR_ROOT" && "$ZIG_BIN" build $OPTIMIZE)
+
+NAYR_BIN="$NAYR_ROOT/zig-out/bin/nayr"
+
+if [ ! -f "$NAYR_BIN" ]; then
+    echo "link-dev: build succeeded but binary not found at $NAYR_BIN" >&2
+    exit 1
+fi
+
+# Create ~/.local/bin if it doesn't exist.
+mkdir -p "$LINK_DIR"
+
+LINK_DEST="$LINK_DIR/nayr"
+ln -sf "$NAYR_BIN" "$LINK_DEST"
+
+echo "✔ linked: $LINK_DEST -> $NAYR_BIN"
+
+# Ensure $LINK_DIR is in PATH for the current session.
+case ":$PATH:" in
+    *":$LINK_DIR:"*) ;;
+    *) export PATH="$LINK_DIR:$PATH" ;;
+esac
+
+# Persist $LINK_DIR in the user's shell config if not already present.
+EXPORT_LINE="export PATH=\"\$HOME/.local/bin:\$PATH\""
+ADDED=0
+for rc_file in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+    if [ -f "$rc_file" ]; then
+        if ! grep -qF '.local/bin' "$rc_file"; then
+            printf '\n# Added by nayr link-dev\n%s\n' "$EXPORT_LINE" >> "$rc_file"
+            echo "✔ added to $rc_file: $EXPORT_LINE"
+            ADDED=1
+        fi
+    fi
+done
+
+if [ "$ADDED" = "0" ]; then
+    echo "  (PATH already contains $LINK_DIR)"
+fi

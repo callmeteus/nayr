@@ -1,4 +1,4 @@
-//! CLI Root — Command Dispatcher
+//! CLI Root - Command Dispatcher
 //!
 //! Parses global flags and routes to the appropriate sub-command handler.
 //! All output passes through the `Writer` selected by `--format`.
@@ -44,6 +44,12 @@ pub const GlobalOptions = struct {
     silent: bool,
     no_color: bool,
     cwd: []const u8,
+    /// True when `cwd` was allocated by this struct and must be freed.
+    cwd_owned: bool = false,
+
+    pub fn deinit(self: *const GlobalOptions, allocator: std.mem.Allocator) void {
+        if (self.cwd_owned) allocator.free(self.cwd);
+    }
 };
 
 // ============================================================================
@@ -57,13 +63,15 @@ pub const GlobalOptions = struct {
 /// - `args`: Raw process arguments (args[0] is the binary name).
 pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len < 2) {
-        // `nayr` with no args defaults to `nayr install` (Yarn Classic behaviour).
-        return runInstall(allocator, args, defaultGlobalOpts(allocator));
+        var default_opts = defaultGlobalOpts(allocator);
+        defer default_opts.deinit(allocator);
+        return runInstall(allocator, args, default_opts);
     }
 
     const global = try parseGlobalOpts(allocator, args);
     const remaining = global.remaining;
-    const opts = global.opts;
+    var opts = global.opts;
+    defer opts.deinit(allocator);
 
     // Version flag.
     if (remaining.len == 0) {
@@ -124,10 +132,10 @@ pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !void {
     } else if (std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
         printHelp();
     } else if (std.mem.eql(u8, cmd, "run")) {
-        // `nayr run <script>` — run a script from package.json.
+        // `nayr run <script>` - run a script from package.json.
         try runScript(allocator, cmd_args, opts.cwd, writer);
     } else {
-        // Unknown command — treat as a script name (Yarn Classic behaviour:
+        // Unknown command - treat as a script name (Yarn Classic behaviour:
         // `yarn build` runs the "build" script from package.json).
         const script_args = args[1..];
         try runScript(allocator, script_args, opts.cwd, writer);
@@ -226,7 +234,10 @@ fn parseGlobalOpts(allocator: std.mem.Allocator, args: []const []const u8) !Pars
             opts.no_color = true;
         } else if (std.mem.eql(u8, arg, "--cwd") and i + 1 < args.len) {
             i += 1;
+            // Replace the auto-detected cwd with the user-specified one.
+            if (opts.cwd_owned) allocator.free(opts.cwd);
             opts.cwd = args[i];
+            opts.cwd_owned = false; // points into args slice, not owned
         } else {
             // First non-global arg: everything from here is the sub-command.
             break;
@@ -237,13 +248,21 @@ fn parseGlobalOpts(allocator: std.mem.Allocator, args: []const []const u8) !Pars
 }
 
 fn defaultGlobalOpts(allocator: std.mem.Allocator) GlobalOptions {
-    const cwd = std.process.getCwdAlloc(allocator) catch ".";
+    const cwd = std.process.getCwdAlloc(allocator) catch return .{
+        .format = output.Format.autoDetect(),
+        .verbose = false,
+        .silent = false,
+        .no_color = false,
+        .cwd = ".",
+        .cwd_owned = false,
+    };
     return .{
         .format = output.Format.autoDetect(),
         .verbose = false,
         .silent = false,
         .no_color = false,
         .cwd = cwd,
+        .cwd_owned = true,
     };
 }
 

@@ -19,7 +19,7 @@ pub fn run(
     defer allocator.free(node_modules);
 
     var dir = std.fs.openDirAbsolute(node_modules, .{ .iterate = true }) catch {
-        writer.emit(.{ .err = "node_modules not found — run nayr install first" });
+        writer.emit(.{ .err = "node_modules not found - run nayr install first" });
         return;
     };
     defer dir.close();

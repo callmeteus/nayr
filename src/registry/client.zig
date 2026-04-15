@@ -23,7 +23,7 @@ const VersionInfo = reg_types.VersionInfo;
 /// An HTTP client for a single npm-compatible registry.
 ///
 /// Each thread in the fetch pool holds its own `RegistryClient` with its own
-/// `std.http.Client` — zero contention between threads.
+/// `std.http.Client` - zero contention between threads.
 pub const RegistryClient = struct {
     allocator: std.mem.Allocator,
     config: *const Config,
@@ -84,7 +84,7 @@ pub const RegistryClient = struct {
 
     /// Downloads a tarball to `dest_path` and verifies its integrity.
     ///
-    /// The download is streamed directly to `dest_path` — no full-file
+    /// The download is streamed directly to `dest_path` - no full-file
     /// buffering in memory. The integrity hash (sha512 or sha1) is computed
     /// incrementally during the download.
     ///
@@ -230,7 +230,7 @@ pub const RegistryClient = struct {
     /// Builds an Authorization header value for the given URL, or null.
     fn buildAuthHeader(self: *const RegistryClient, url: []const u8) ?[]const u8 {
         const token = self.config.getAuthToken(url) orelse return null;
-        // Pre-allocate in the allocator — short-lived header value.
+        // Pre-allocate in the allocator - short-lived header value.
         return std.fmt.allocPrint(self.allocator, "Bearer {s}", .{token}) catch null;
     }
 };

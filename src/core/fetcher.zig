@@ -2,7 +2,7 @@
 //!
 //! Downloads package tarballs from npm registries in parallel using a thread
 //! pool, then stores them in the global cache. Each thread has its own HTTP
-//! connection pool — zero shared state between threads.
+//! connection pool - zero shared state between threads.
 //!
 //! Fetch pipeline for each package:
 //!   1. Check cache (`cache.has(name, version)`). Hit → skip download.
@@ -39,7 +39,7 @@ pub const FetcherOptions = struct {
 /// Downloads all packages that are not already in cache.
 ///
 /// Spawns up to `opts.concurrency` threads. Each thread takes work items
-/// from an atomic ring buffer — no mutex, no lock contention.
+/// from an atomic ring buffer - no mutex, no lock contention.
 ///
 /// ## Parameters
 /// - `allocator`: Main allocator (each thread creates its own arena on top).

@@ -1,4 +1,4 @@
-//! nayr.lock Format — Reader and Writer
+//! nayr.lock Format - Reader and Writer
 //!
 //! The nayr.lock format is a text-based structured format, inspired by
 //! yarn.lock v1 but with cleaner key: value syntax and explicit workspace
