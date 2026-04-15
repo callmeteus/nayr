@@ -109,20 +109,22 @@ The bench script measures four scenarios that represent real-world usage:
 ### Example output
 
 ```
-nayr benchmark — fixture: simple, 3 runs each
+nayr benchmark — fixture: simple, 5 runs each
 
   Scenario              nayr        yarn        Speedup
   --------              ----        ----        -------
-  cold install          3.2s        8.7s        2.7x faster
-  warm install          0.8s        2.1s        2.6x faster
-  locked install        0.4s        1.3s        3.2x faster
-  no-op install         41ms        312ms       7.6x faster
+  cold install          623ms       795ms       1.3x faster
+  warm install          421ms       533ms       1.3x faster
+  locked install        434ms       290ms       0.7x faster
+  no-op install         2ms         208ms       104.0x faster
 
   ✔ no-op install under 500ms target
 ```
 
-> **Note:** actual numbers will vary. The benchmark uses median of N runs to
-> reduce noise. Use `--runs 5` or higher for more stable results.
+> **Note:** actual numbers will vary by machine, network, and fixture size.
+> The benchmark uses median of N runs to reduce noise. Use `--runs 5` or
+> higher for more stable results. The locked scenario will improve once
+> lockfile-as-source-of-truth resolution is implemented.
 
 ### Options
 
