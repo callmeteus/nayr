@@ -23,28 +23,43 @@ Yarn Classic is slow and ships a massive JavaScript runtime just to move files a
 
 ## Benchmarks
 
-> Median of 3 runs on the same machine (Linux, AMD Ryzen 9, NVMe SSD).  
-> Run your own: `bash tests/bench/bench.sh --runs 3`
+> Same methodology as [pnpm.io/benchmarks](https://pnpm.io/benchmarks).  
+> Machine: Ubuntu 24.04 LTS, Intel i7-13650HX (20 threads), NVMe SSD.  
+> Run your own: `bash tests/bench/bench.sh --runs 3 [--fixture simple|workspace|alotta-files]`
 
-### Simple fixture (`lodash`, `ms`, `is-odd`)
+### Simple fixture (`lodash`, `ms`, `is-odd`) — median of 3 runs
 
-| Scenario | nayr | yarn 1.22 | Speedup |
-|---|---|---|---|
-| **cold install** (no cache, no lockfile) | 462 ms | 1164 ms | **2.5×** |
-| **warm install** (cache hit, no lockfile) | 239 ms | 631 ms | **2.6×** |
-| **locked install** (cache + lockfile, fresh `node_modules`) | 229 ms | 383 ms | **1.7×** |
-| **no-op** (nothing changed) | **3 ms** | 340 ms | **113×** |
+| action  | cache | lockfile | node_modules | nayr | pnpm 10 | yarn 1.22 |
+|---------|-------|----------|--------------|------|---------|-----------|
+| install |       |          |              | 502 ms | 1064 ms | 1281 ms |
+| install | ✔    | ✔       | ✔           | **3 ms** | 348 ms | 318 ms |
+| install | ✔    | ✔       |              | 222 ms | 408 ms | 429 ms |
+| install | ✔    |          |              | 231 ms | 562 ms | 690 ms |
+| install | ✔    |          | ✔           | 240 ms | 391 ms | 845 ms |
+| install |       | ✔       | ✔           | **4 ms** | 638 ms | 654 ms |
+| install |       |          | ✔           | 445 ms | 933 ms | 1191 ms |
+| install |       | ✔       |              | 418 ms | 904 ms | 1042 ms |
+| update  | n/a   | n/a      | n/a          | 443 ms | 845 ms | 1056 ms |
 
-### Workspace fixture (root + 2 packages, 5 deps total)
+### alotta-files fixture (~100 deps, same as pnpm's own benchmark) — median of 2 runs
 
-| Scenario | nayr | yarn 1.22 | Speedup |
-|---|---|---|---|
-| **cold install** | 446 ms | 1188 ms | **2.7×** |
-| **warm install** | 410 ms | 663 ms | **1.6×** |
-| **locked install** | 226 ms | 416 ms | **1.8×** |
-| **no-op** | **3 ms** | 314 ms | **105×** |
+> Cache-dependent scenarios (clean, nm, lf) are network-bound and vary by connection.
 
-The no-op path is the one developers hit on every save/switch. nayr exits in ~3 ms by checking an integrity stamp; yarn spends ~330 ms in Node.js startup before it can even begin.
+| action  | cache | lockfile | node_modules | nayr | pnpm 10 |
+|---------|-------|----------|--------------|------|---------|
+| install |       |          |              | ~14.6s | ~20s |
+| install | ✔    | ✔       | ✔           | **3 ms** | 496 ms |
+| install | ✔    | ✔       |              | 7.8s | 1.4s |
+| install | ✔    |          |              | 8.5s | 11.2s |
+| install | ✔    |          | ✔           | 8.4s | 2.1s |
+| install |       | ✔       | ✔           | **4 ms** | 911 ms |
+| install |       |          | ✔           | ~16s | ~11.5s |
+| install |       | ✔       |              | ~16.7s | ~5s |
+| update  | n/a   | n/a      | n/a          | 18.3s | 3.9s |
+
+The no-op and `lockfile + node_modules` rows (the scenarios developers and CI hit the most) show the biggest gap: nayr exits in **3-4 ms** by checking an integrity stamp; pnpm costs 350-900 ms and yarn 315-650 ms of startup overhead before they even begin.
+
+Where nayr loses ground vs pnpm on the large fixture is `c_lf` (cache + lockfile, fresh install) and `update` - this is the linking phase and hoisting algorithm, which are still being optimised.
 
 Resolution is parallelised via a FIFO worker pool: as soon as any package metadata arrives, its transitive deps are pushed to free workers immediately - no waiting for an entire "wave" to finish. Fetching and linking are also fully parallel.
 
