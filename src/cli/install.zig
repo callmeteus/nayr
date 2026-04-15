@@ -69,10 +69,15 @@ pub fn run(
     std.fs.accessAbsolute(pkg_json_path, .{}) catch |err| switch (err) {
         error.FileNotFound => {
             const stderr = std.io.getStdErr().writer();
+            const colour = output.hasTtyStderr();
             stderr.print(
-                "error: No package.json found in {s}\n" ++
-                    "       Make sure you are inside a Node.js project directory.\n",
-                .{cwd},
+                "{s}error{s} No package.json found in {s}\n" ++
+                    "      Make sure you are inside a Node.js project directory.\n",
+                .{
+                    if (colour) "\x1b[1;31m" else "",
+                    if (colour) "\x1b[0m" else "",
+                    cwd,
+                },
             ) catch {};
             std.process.exit(1);
         },
@@ -119,13 +124,27 @@ pub fn run(
 
     // --- Phase 3: Hoist ---
     const workspaces = try ws_discovery.discover(allocator, cwd);
+    defer {
+        for (workspaces) |*ws| {
+            allocator.free(ws.path);
+            allocator.free(ws.rel_path);
+            var m = ws.manifest;
+            m.deinit(allocator);
+        }
+        allocator.free(workspaces);
+    }
     const root_manifest_path = try std.fs.path.join(allocator, &.{ cwd, "package.json" });
     defer allocator.free(root_manifest_path);
-    const root_manifest = try json_util.parseFile(allocator, root_manifest_path);
+    var root_manifest = try json_util.parseFile(allocator, root_manifest_path);
+    defer root_manifest.deinit(allocator);
     const nohoist_patterns = ws_discovery.nohoistPatterns(&root_manifest);
     const checker = nohoist_mod.NohoistChecker.init(nohoist_patterns);
 
     const hoisted = try hoister_mod.hoist(allocator, &resolution.packages, &checker);
+    defer {
+        for (hoisted) |hp| allocator.free(hp.install_path);
+        allocator.free(hoisted);
+    }
 
     // Build workspace name → path map for the linker.
     var ws_paths = std.StringHashMapUnmanaged([]const u8){};
@@ -154,14 +173,13 @@ pub fn run(
     try integrity_mod.save(allocator, cwd);
 
     const elapsed: u64 = @intCast(std.time.milliTimestamp() - start);
-    writer.emit(.{ .done = .{
-        .elapsed_ms = elapsed,
-        .summary = try std.fmt.allocPrint(
-            allocator,
-            "{d} packages installed",
-            .{resolution.packages.count()},
-        ),
-    } });
+    const summary = try std.fmt.allocPrint(
+        allocator,
+        "{d} packages installed",
+        .{resolution.packages.count()},
+    );
+    defer allocator.free(summary);
+    writer.emit(.{ .done = .{ .elapsed_ms = elapsed, .summary = summary } });
 }
 
 // ============================================================================

@@ -54,21 +54,30 @@ pub fn hoist(
 ) ![]HoistedPackage {
     // Collect all packages into a workable slice.
     var pkgs = try std.ArrayList(*const ResolvedPackage).initCapacity(allocator, packages.count());
+    defer pkgs.deinit();
     var it = packages.valueIterator();
     while (it.next()) |p| try pkgs.append(p);
 
     // -------------------------------------------------------------------------
     // Phase 1: Prepass - count occurrences of each (name, version) pair.
     // -------------------------------------------------------------------------
+    // Keys are heap-allocated "<name>@<version>" strings owned by this map.
     var version_counts = std.StringHashMapUnmanaged(VersionCount){};
-    defer version_counts.deinit(allocator);
+    defer {
+        var vc_free_it = version_counts.keyIterator();
+        while (vc_free_it.next()) |k| allocator.free(k.*);
+        version_counts.deinit(allocator);
+    }
 
     for (pkgs.items) |pkg| {
         const key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ pkg.name, pkg.version });
-        defer allocator.free(key);
 
         const entry = try version_counts.getOrPut(allocator, key);
-        if (!entry.found_existing) {
+        if (entry.found_existing) {
+            // The map already owns the key from a previous insert — free the dup.
+            allocator.free(key);
+        } else {
+            // The map now owns `key` — keep it alive until the map is freed.
             entry.value_ptr.* = VersionCount{ .name = pkg.name, .version = pkg.version, .count = 0 };
         }
         entry.value_ptr.*.count += 1;
@@ -78,7 +87,6 @@ pub fn hoist(
     // Phase 2: Seeding - seed the most popular version of each package name
     // at the root level.
     // -------------------------------------------------------------------------
-    // For each package name, find the version with the highest count.
     var root_versions = std.StringHashMapUnmanaged([]const u8){};
     defer root_versions.deinit(allocator);
 
@@ -87,9 +95,9 @@ pub fn hoist(
         const vc = kv.value_ptr;
         if (root_versions.get(vc.name)) |existing_ver| {
             // Keep the version with the higher count; break ties with semver order.
-            const existing_count = version_counts.get(
-                try std.fmt.allocPrint(allocator, "{s}@{s}", .{ vc.name, existing_ver }),
-            ) orelse continue;
+            const lookup_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ vc.name, existing_ver });
+            defer allocator.free(lookup_key);
+            const existing_count = version_counts.get(lookup_key) orelse continue;
             if (vc.count > existing_count.count) {
                 try root_versions.put(allocator, vc.name, vc.version);
             }

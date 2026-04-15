@@ -14,6 +14,7 @@
 const std = @import("std");
 const cli = @import("cli/root.zig");
 const output = @import("util/output.zig");
+const build_options = @import("build_options");
 
 pub fn main() !void {
     // Use a GeneralPurposeAllocator for the CLI lifetime. Each sub-phase
@@ -36,6 +37,10 @@ pub fn main() !void {
                 "No package.json found in the current directory. Run nayr inside a Node.js project.",
             error.FrozenLockfileChanged =>
                 "--frozen-lockfile is set but the lockfile would need to be updated.",
+            error.NetworkError =>
+                "Network request failed. Check your internet connection and registry URL.",
+            error.HttpError =>
+                "The registry returned an HTTP error (4xx/5xx). Check the package name and registry URL.",
             error.OutOfMemory =>
                 "Out of memory.",
             error.AccessDenied =>
@@ -44,10 +49,13 @@ pub fn main() !void {
                 "package.json contains invalid JSON. Fix the syntax and try again.",
             else => null,
         };
+        const colour = output.hasTtyStderr();
+        const red_bold = if (colour) "\x1b[1;31m" else "";
+        const reset = if (colour) "\x1b[0m" else "";
         if (msg) |m| {
-            stderr.print("error: {s}\n", .{m}) catch {};
+            stderr.print("{s}error{s} {s}\n", .{ red_bold, reset, m }) catch {};
         } else {
-            stderr.print("error: {s}\n", .{@errorName(err)}) catch {};
+            stderr.print("{s}error{s} {s}\n", .{ red_bold, reset, @errorName(err) }) catch {};
         }
         std.process.exit(1);
     };

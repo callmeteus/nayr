@@ -1,0 +1,8 @@
+{
+  "name": "@nayr-test/pkg-b",
+  "version": "1.0.0",
+  "dependencies": {
+    "@nayr-test/pkg-a": "^1.0.0",
+    "is-odd": "^3.0.1"
+  }
+}

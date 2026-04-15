@@ -46,7 +46,8 @@ pub fn discover(allocator: std.mem.Allocator, root_dir: []const u8) ![]Workspace
     const root_manifest_path = try std.fs.path.join(allocator, &.{ root_dir, "package.json" });
     defer allocator.free(root_manifest_path);
 
-    const root_manifest = try json_util.parseFile(allocator, root_manifest_path);
+    var root_manifest = try json_util.parseFile(allocator, root_manifest_path);
+    defer root_manifest.deinit(allocator);
 
     const globs: []const []const u8 = switch (root_manifest.workspaces) {
         .none => return &.{}, // No workspaces defined.

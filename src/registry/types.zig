@@ -25,7 +25,11 @@ pub const PackageMetadata = struct {
 
     pub fn deinit(self: *PackageMetadata, allocator: std.mem.Allocator) void {
         var vit = self.versions.iterator();
-        while (vit.next()) |kv| kv.value_ptr.deinit(allocator);
+        while (vit.next()) |kv| {
+            // The map key is the same pointer as kv.value_ptr.*.version,
+            // so it is freed inside deinit() below — do NOT free it here.
+            kv.value_ptr.deinit(allocator);
+        }
         self.versions.deinit(allocator);
         var dit = self.dist_tags.iterator();
         while (dit.next()) |kv| {
@@ -64,12 +68,23 @@ pub const VersionInfo = struct {
         allocator.free(self.version);
         allocator.free(self.tarball);
         if (self.integrity.len > 0) allocator.free(self.integrity);
-        self.dependencies.deinit(allocator);
-        self.optional_dependencies.deinit(allocator);
-        self.peer_dependencies.deinit(allocator);
-        self.bin.deinit(allocator);
+        freeStrMap(allocator, &self.dependencies);
+        freeStrMap(allocator, &self.optional_dependencies);
+        freeStrMap(allocator, &self.peer_dependencies);
+        freeStrMap(allocator, &self.bin);
     }
 };
+
+/// Frees all key-value string pairs inside a StringHashMapUnmanaged, then the map.
+fn freeStrMap(allocator: std.mem.Allocator, map: *std.StringHashMapUnmanaged([]const u8)) void {
+    var it = map.iterator();
+    while (it.next()) |kv| {
+        allocator.free(kv.key_ptr.*);
+        allocator.free(kv.value_ptr.*);
+    }
+    map.deinit(allocator);
+}
+
 
 // ============================================================================
 // AuditAdvisory

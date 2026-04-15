@@ -1,0 +1,12 @@
+{
+  "name": "nayr-test-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Workspace fixture for nayr integration tests",
+  "workspaces": [
+    "packages/*"
+  ],
+  "dependencies": {
+    "lodash": "^4.17.21"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "nayr-test-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Scripts fixture for nayr integration tests",
+  "scripts": {
+    "greet":   "echo 'hello from nayr'",
+    "version": "node --version",
+    "check":   "node -e \"process.exit(0)\"",
+    "fail":    "node -e \"process.exit(7)\"",
+    "args":    "node -e \"console.log(process.argv.slice(1).join(' '))\""
+  },
+  "dependencies": {
+    "ms": "^2.1.3"
+  }
+}

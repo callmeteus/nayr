@@ -13,6 +13,7 @@
 const std = @import("std");
 const platform = @import("platform.zig");
 const tui = @import("tui.zig");
+const build_options = @import("build_options");
 
 // ============================================================================
 // Output format enum
@@ -197,9 +198,7 @@ const TuiWriter = struct {
         const w = self.stdout.writer();
         switch (event) {
             .resolve_progress => |p| {
-                // In TUI mode, a real implementation would use cursor movement
-                // to update the progress bar in-place. For now render a line.
-                w.print("\r  {s}Resolving{s}   {d}/{d}", .{
+                w.print("\r{s}  resolving{s}  {d}/{d}   ", .{
                     if (self.colour) "\x1b[36m" else "",
                     if (self.colour) "\x1b[0m" else "",
                     p.resolved,
@@ -207,32 +206,43 @@ const TuiWriter = struct {
                 }) catch {};
             },
             .fetch_progress => |p| {
-                const mbps = @as(f64, @floatFromInt(p.bytes_per_sec)) / (1024.0 * 1024.0);
-                w.print("\r  {s}Fetching{s}     {d}/{d}  ({d:.1} MB/s)", .{
-                    if (self.colour) "\x1b[32m" else "",
-                    if (self.colour) "\x1b[0m" else "",
-                    p.fetched,
-                    p.total,
-                    mbps,
-                }) catch {};
+                if (p.bytes_per_sec > 0) {
+                    const mbps = @as(f64, @floatFromInt(p.bytes_per_sec)) / (1024.0 * 1024.0);
+                    w.print("\r{s}  fetching{s}   {d}/{d}  {s}({d:.1} MB/s){s}  ", .{
+                        if (self.colour) "\x1b[32m" else "",
+                        if (self.colour) "\x1b[0m" else "",
+                        p.fetched,
+                        p.total,
+                        if (self.colour) "\x1b[2m" else "",
+                        mbps,
+                        if (self.colour) "\x1b[0m" else "",
+                    }) catch {};
+                } else {
+                    w.print("\r{s}  fetching{s}   {d}/{d}  ", .{
+                        if (self.colour) "\x1b[32m" else "",
+                        if (self.colour) "\x1b[0m" else "",
+                        p.fetched,
+                        p.total,
+                    }) catch {};
+                }
             },
             .link_progress => |p| {
-                w.print("\r  {s}Linking{s}      {d}/{d}", .{
-                    if (self.colour) "\x1b[33m" else "",
+                w.print("\r{s}  linking{s}    {d}/{d}  ", .{
+                    if (self.colour) "\x1b[35m" else "",
                     if (self.colour) "\x1b[0m" else "",
                     p.linked,
                     p.total,
                 }) catch {};
             },
             .info => |msg| {
-                w.print("\n{s}info{s} {s}\n", .{
-                    if (self.colour) "\x1b[34m" else "",
+                w.print("{s}  info{s}  {s}\n", .{
+                    if (self.colour) "\x1b[2m" else "",
                     if (self.colour) "\x1b[0m" else "",
                     msg,
                 }) catch {};
             },
             .warning => |msg| {
-                w.print("\n{s}warn{s} {s}\n", .{
+                w.print("{s}  warn{s}  {s}\n", .{
                     if (self.colour) "\x1b[33m" else "",
                     if (self.colour) "\x1b[0m" else "",
                     msg,
@@ -240,19 +250,21 @@ const TuiWriter = struct {
             },
             .err => |msg| {
                 const stderr = std.io.getStdErr().writer();
-                stderr.print("\n{s}error{s} {s}\n", .{
-                    if (self.colour) "\x1b[31m" else "",
+                stderr.print("{s}  error{s} {s}\n", .{
+                    if (self.colour) "\x1b[1;31m" else "",
                     if (self.colour) "\x1b[0m" else "",
                     msg,
                 }) catch {};
             },
             .done => |d| {
                 const secs = @as(f64, @floatFromInt(d.elapsed_ms)) / 1000.0;
-                w.print("\n{s}✓{s} {s} ({d:.2}s)\n", .{
+                w.print("{s}  done{s}  {s} {s}({d:.2}s){s}\n", .{
                     if (self.colour) "\x1b[32m" else "",
                     if (self.colour) "\x1b[0m" else "",
                     d.summary,
+                    if (self.colour) "\x1b[2m" else "",
                     secs,
+                    if (self.colour) "\x1b[0m" else "",
                 }) catch {};
             },
             .table_row => |row| {
@@ -459,8 +471,39 @@ const JsonWriter = struct {
 };
 
 // ============================================================================
+// Banner
+// ============================================================================
+
+/// Prints the `nayr vX.Y.Z` header to stdout.
+///
+/// Only printed when:
+///   - `format` is `.tui` (i.e. the output is an interactive terminal), AND
+///   - `silent` is false.
+///
+/// The line is intentionally short — no taglines or ASCII art — so it stays
+/// clean inside monorepo build output.
+pub fn printBanner(format: Format, silent: bool) void {
+    if (silent or format != .tui) return;
+    const colour = !hasNoColor();
+    const w = std.io.getStdErr().writer();
+    if (colour) {
+        // Bright white "nayr" + dim cyan version
+        w.print("\x1b[1mnayr\x1b[0m \x1b[2mv{s}\x1b[0m\n", .{build_options.version}) catch {};
+    } else {
+        w.print("nayr v{s}\n", .{build_options.version}) catch {};
+    }
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
+
+/// Returns true when stderr is a TTY and colours are not suppressed.
+/// Useful for error messages that bypass the Writer pipeline.
+pub fn hasTtyStderr() bool {
+    if (hasNoColor()) return false;
+    return std.posix.isatty(std.io.getStdErr().handle);
+}
 
 /// Returns true if the NO_COLOR env var is set (https://no-color.org) or if
 /// TERM is "dumb".

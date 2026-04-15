@@ -73,6 +73,30 @@ pub const ResolutionResult = struct {
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *ResolutionResult) void {
+        // Free each ResolvedPackage's string fields and dependency maps.
+        var it = self.packages.iterator();
+        while (it.next()) |kv| {
+            const key = kv.key_ptr.*;
+            var pkg = kv.value_ptr.*;
+            self.allocator.free(key);
+            self.allocator.free(pkg.name);
+            self.allocator.free(pkg.version);
+            if (pkg.tarball_url.len > 0) self.allocator.free(pkg.tarball_url);
+            if (pkg.integrity.len > 0) self.allocator.free(pkg.integrity);
+            if (pkg.registry.len > 0) self.allocator.free(pkg.registry);
+            var dep_it = pkg.dependencies.iterator();
+            while (dep_it.next()) |dep| {
+                self.allocator.free(dep.key_ptr.*);
+                self.allocator.free(dep.value_ptr.*);
+            }
+            pkg.dependencies.deinit(self.allocator);
+            var opt_it = pkg.optional_dependencies.iterator();
+            while (opt_it.next()) |dep| {
+                self.allocator.free(dep.key_ptr.*);
+                self.allocator.free(dep.value_ptr.*);
+            }
+            pkg.optional_dependencies.deinit(self.allocator);
+        }
         self.packages.deinit(self.allocator);
         self.lockfile.deinit(self.allocator);
     }
@@ -133,12 +157,13 @@ pub fn resolve(
 
     // --- Discover workspaces ---
     const workspaces = try ws_discovery.discover(allocator, root_dir);
-    const ws_res = try ws_resolver.WorkspaceResolver.init(allocator, workspaces);
+    var ws_res = try ws_resolver.WorkspaceResolver.init(allocator, workspaces);
 
     // --- Load root manifest ---
     const root_manifest_path = try std.fs.path.join(allocator, &.{ root_dir, "package.json" });
     defer allocator.free(root_manifest_path);
-    const root_manifest = try json_util.parseFile(allocator, root_manifest_path);
+    var root_manifest = try json_util.parseFile(allocator, root_manifest_path);
+    defer root_manifest.deinit(allocator);
 
     // --- Build registry client ---
     var client = registry_client.RegistryClient.init(allocator, config);
@@ -150,7 +175,11 @@ pub fn resolve(
 
     var resolved_set = std.StringHashMapUnmanaged(ResolvedPackage){};
     var visited = std.StringHashMapUnmanaged(void){};
-    defer visited.deinit(allocator);
+    defer {
+        var vis_it = visited.keyIterator();
+        while (vis_it.next()) |k| allocator.free(k.*);
+        visited.deinit(allocator);
+    }
 
     // Seed from root manifest.
     try enqueueDeps(allocator, &queue, &root_manifest, opts);
@@ -186,7 +215,8 @@ pub fn resolve(
         if (ws_res.resolve(req.name, effective_range)) |ws_pkg| {
             const rp = ResolvedPackage{
                 .name = req.name,
-                .version = ws_pkg.manifest.version orelse "0.0.0",
+                // Dupe version so we can free workspace manifests after the loop.
+                .version = try allocator.dupe(u8, ws_pkg.manifest.version orelse "0.0.0"),
                 .tarball_url = "",
                 .integrity = "",
                 .registry = "",
@@ -271,6 +301,23 @@ pub fn resolve(
         try enqueueMapDeps(allocator, &queue, &ver_info.optional_dependencies, opts.ignore_optional);
     }
 
+    // Free queue items (names and ranges were duped during enqueue).
+    for (queue.items) |req| {
+        allocator.free(req.name);
+        allocator.free(req.range);
+    }
+
+    // WorkspaceResolver holds pointers into workspaces - free it before workspaces.
+    ws_res.deinit();
+
+    // Free workspace manifests and paths now that the BFS loop is done.
+    for (workspaces) |*ws| {
+        allocator.free(ws.path);
+        allocator.free(ws.rel_path);
+        ws.manifest.deinit(allocator);
+    }
+    allocator.free(workspaces);
+
     // --- Build the new lockfile ---
     const new_lock = try buildLockfile(allocator, &resolved_set);
 
@@ -297,22 +344,36 @@ fn enqueueDeps(
     manifest: *const PackageJson,
     opts: ResolverOptions,
 ) !void {
+    // All strings are copied so that manifests can be freed after enqueueing
+    // without leaving dangling pointers in the queue.
     if (!opts.production) {
         var it = manifest.dev_dependencies.iterator();
         while (it.next()) |kv| {
-            try queue.append(.{ .name = try allocator.dupe(u8, kv.key_ptr.*), .range = kv.value_ptr.*, .optional = false });
+            try queue.append(.{
+                .name = try allocator.dupe(u8, kv.key_ptr.*),
+                .range = try allocator.dupe(u8, kv.value_ptr.*),
+                .optional = false,
+            });
         }
     }
 
     var it = manifest.dependencies.iterator();
     while (it.next()) |kv| {
-        try queue.append(.{ .name = try allocator.dupe(u8, kv.key_ptr.*), .range = kv.value_ptr.*, .optional = false });
+        try queue.append(.{
+            .name = try allocator.dupe(u8, kv.key_ptr.*),
+            .range = try allocator.dupe(u8, kv.value_ptr.*),
+            .optional = false,
+        });
     }
 
     if (!opts.ignore_optional) {
         var oit = manifest.optional_dependencies.iterator();
         while (oit.next()) |kv| {
-            try queue.append(.{ .name = try allocator.dupe(u8, kv.key_ptr.*), .range = kv.value_ptr.*, .optional = true });
+            try queue.append(.{
+                .name = try allocator.dupe(u8, kv.key_ptr.*),
+                .range = try allocator.dupe(u8, kv.value_ptr.*),
+                .optional = true,
+            });
         }
     }
 }
@@ -456,11 +517,17 @@ fn buildLockfile(
     while (it.next()) |kv| {
         const pkg = kv.value_ptr;
         const pattern = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ pkg.name, pkg.version });
+
+        // Heap-allocate the patterns array so that the slice pointer survives
+        // beyond this loop iteration (stack-allocated &.{pattern} would be UB).
+        const patterns = try allocator.alloc([]const u8, 1);
+        patterns[0] = pattern;
+
         const entry = lockfile_types.LockfileEntry{
-            .patterns = &.{pattern},
-            .version = pkg.version,
-            .resolved = pkg.tarball_url,
-            .integrity = pkg.integrity,
+            .patterns = patterns,
+            .version = try allocator.dupe(u8, pkg.version),
+            .resolved = try allocator.dupe(u8, pkg.tarball_url),
+            .integrity = try allocator.dupe(u8, pkg.integrity),
         };
         const idx = entries.items.len;
         try pattern_map.put(allocator, pattern, idx);

@@ -154,7 +154,8 @@ fn linkBinEntries(
     const manifest_path = try std.fs.path.join(allocator, &.{ pkg_dir, "package.json" });
     defer allocator.free(manifest_path);
 
-    const manifest = json_util.parseFile(allocator, manifest_path) catch return;
+    var manifest = json_util.parseFile(allocator, manifest_path) catch return;
+    defer manifest.deinit(allocator);
 
     switch (manifest.bin) {
         .none => {},

@@ -86,16 +86,50 @@ pub const PackageJson = struct {
         };
     };
 
-    /// Frees all memory owned by this struct.
+    /// Frees all memory owned by this struct, including the individual string
+    /// allocations inside each map (keys, values) and optional string fields.
     pub fn deinit(self: *PackageJson, allocator: std.mem.Allocator) void {
-        self.dependencies.deinit(allocator);
-        self.dev_dependencies.deinit(allocator);
-        self.peer_dependencies.deinit(allocator);
-        self.optional_dependencies.deinit(allocator);
-        self.scripts.deinit(allocator);
-        self.resolutions.deinit(allocator);
-        self.engines.deinit(allocator);
-        if (self.bin == .map) self.bin.map.deinit(allocator);
+        if (self.name) |s| allocator.free(s);
+        if (self.version) |s| allocator.free(s);
+        if (self.main) |s| allocator.free(s);
+
+        freeStringMap(allocator, &self.dependencies);
+        freeStringMap(allocator, &self.dev_dependencies);
+        freeStringMap(allocator, &self.peer_dependencies);
+        freeStringMap(allocator, &self.optional_dependencies);
+        freeStringMap(allocator, &self.scripts);
+        freeStringMap(allocator, &self.resolutions);
+        freeStringMap(allocator, &self.engines);
+        switch (self.bin) {
+            .map => |*m| freeStringMap(allocator, m),
+            .single => |s| allocator.free(s),
+            .none => {},
+        }
+        switch (self.workspaces) {
+            .globs => |globs| {
+                for (globs) |g| allocator.free(g);
+                allocator.free(globs);
+            },
+            .extended => |ext| {
+                for (ext.packages) |p| allocator.free(p);
+                allocator.free(ext.packages);
+                for (ext.nohoist) |p| allocator.free(p);
+                allocator.free(ext.nohoist);
+            },
+            .none => {},
+        }
+        for (self.files) |f| allocator.free(f);
+        if (self.files.len > 0) allocator.free(self.files);
+    }
+
+    /// Frees all string keys and values inside a `StringMap`, then the map itself.
+    fn freeStringMap(allocator: std.mem.Allocator, map: *StringMap) void {
+        var it = map.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*);
+        }
+        map.deinit(allocator);
     }
 };
 

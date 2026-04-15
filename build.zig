@@ -14,6 +14,13 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
 
     // -------------------------------------------------------------------------
+    // Build options - version embedded from package.json at build time
+    // -------------------------------------------------------------------------
+    const version = readPackageVersion(b) catch "0.0.0";
+    const options = b.addOptions();
+    options.addOption([]const u8, "version", version);
+
+    // -------------------------------------------------------------------------
     // Main executable
     // -------------------------------------------------------------------------
     const exe = b.addExecutable(.{
@@ -22,6 +29,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    exe.root_module.addOptions("build_options", options);
 
     b.installArtifact(exe);
 
@@ -46,6 +54,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    unit_tests.root_module.addOptions("build_options", options);
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
     // -------------------------------------------------------------------------
@@ -67,6 +76,7 @@ pub fn build(b: *std.Build) void {
             .target = resolved,
             .optimize = .ReleaseFast,
         });
+        cross_exe.root_module.addOptions("build_options", options);
         const install = b.addInstallArtifact(cross_exe, .{
             .dest_dir = .{
                 .override = .{
@@ -79,4 +89,23 @@ pub fn build(b: *std.Build) void {
         });
         cross_step.dependOn(&install.step);
     }
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/// Reads the "version" field from package.json at build time.
+/// Returns a duplicated string owned by the build allocator, or an error.
+fn readPackageVersion(b: *std.Build) ![]const u8 {
+    const content = try b.build_root.handle.readFileAlloc(b.allocator, "package.json", 16 * 1024);
+    defer b.allocator.free(content);
+    const parsed = try std.json.parseFromSlice(std.json.Value, b.allocator, content, .{});
+    defer parsed.deinit();
+    if (parsed.value == .object) {
+        if (parsed.value.object.get("version")) |v| {
+            if (v == .string) return b.dupe(v.string);
+        }
+    }
+    return error.VersionNotFound;
 }

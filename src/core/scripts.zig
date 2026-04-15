@@ -44,7 +44,8 @@ pub fn runAll(
         const manifest_path = try std.fs.path.join(allocator, &.{ pkg_dir, "package.json" });
         defer allocator.free(manifest_path);
 
-        const manifest = json_util.parseFile(allocator, manifest_path) catch continue;
+        var manifest = json_util.parseFile(allocator, manifest_path) catch continue;
+        defer manifest.deinit(allocator);
 
         for (lifecycle_scripts) |script_name| {
             if (manifest.scripts.get(script_name)) |script_cmd| {

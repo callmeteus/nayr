@@ -16,6 +16,13 @@
     "build": "zig build -Doptimize=ReleaseFast",
     "build:debug": "zig build",
     "link:dev": "sh bin/link-dev",
-    "link:dev:release": "sh bin/link-dev --release"
+    "link:dev:release": "sh bin/link-dev --release",
+    "test": "sh tests/run.sh all --no-yarn",
+    "test:unit": "sh tests/run.sh unit",
+    "test:integration": "sh tests/run.sh integration --no-yarn",
+    "test:compare": "sh tests/run.sh integration",
+    "bench": "sh tests/run.sh bench --no-yarn",
+    "bench:compare": "sh tests/run.sh bench",
+    "ci": "sh tests/run.sh ci"
   }
 }

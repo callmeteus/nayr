@@ -134,15 +134,25 @@ fn fetchWorker(shared: *const SharedFetchState, parent_alloc: std.mem.Allocator)
 
         const pkg = shared.pending[idx];
 
-        client.downloadTarball(pkg.tarball_url, "/tmp/nayr-tarball.tmp", pkg.integrity) catch |err| {
+        // Use a per-package temp path to avoid race conditions between threads
+        // all writing to the same fixed temp file.
+        const tmp_path = std.fmt.allocPrint(allocator, "/tmp/nayr-dl-{d}.tmp", .{idx}) catch {
+            shared.writer.emit(.{ .warning = "OutOfMemory" });
+            _ = shared.done_count.fetchAdd(1, .release);
+            continue;
+        };
+        defer allocator.free(tmp_path);
+
+        client.downloadTarball(pkg.tarball_url, tmp_path, pkg.integrity) catch |err| {
             shared.writer.emit(.{ .warning = @errorName(err) });
             _ = shared.done_count.fetchAdd(1, .release);
             continue;
         };
 
-        // Read the downloaded tarball and store in cache.
-        if (std.fs.openFileAbsolute("/tmp/nayr-tarball.tmp", .{})) |f| {
+        // Read the downloaded tarball and store in cache, then clean up.
+        if (std.fs.openFileAbsolute(tmp_path, .{})) |f| {
             defer f.close();
+            defer std.fs.deleteFileAbsolute(tmp_path) catch {};
             if (f.readToEndAlloc(allocator, 64 * 1024 * 1024)) |data| {
                 shared.cache.store(pkg.registry, pkg.name, pkg.version, data) catch |err| {
                     shared.writer.emit(.{ .warning = @errorName(err) });

@@ -1,0 +1,13 @@
+{
+  "name": "nayr-test-simple",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Simple fixture for nayr integration tests",
+  "dependencies": {
+    "lodash": "^4.17.21",
+    "ms": "^2.1.3"
+  },
+  "devDependencies": {
+    "is-odd": "^3.0.1"
+  }
+}

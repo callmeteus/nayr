@@ -183,30 +183,131 @@ pub fn createBinStub(allocator: std.mem.Allocator, bin_dir: []const u8, name: []
     try symlinkOrJunction(target, link_path);
 }
 
-/// Runs a shell command using the platform's native shell.
+/// Runs a shell command string using the platform's native shell, with
+/// `node_modules/.bin` prepended to PATH so that locally-installed binaries
+/// are always resolvable inside scripts.
 ///
-/// Linux/macOS: `/bin/sh -c <cmd>`
-/// Windows:     `cmd.exe /c <cmd>`
+/// Linux/macOS: `PATH=<cwd>/node_modules/.bin:$PATH /bin/sh -c <cmd>`
+/// Windows:     `cmd.exe /c <cmd>` (with PATH mutation via env_map)
 ///
 /// ## Parameters
-/// - `allocator`: Allocator for argument arrays.
-/// - `cmd`: Shell command string to execute.
+/// - `allocator`: Allocator for argument arrays and env map.
+/// - `cmd`: Shell command string to execute (may contain shell operators).
 /// - `cwd`: Working directory for the child process.
 ///
 /// ## Returns
-/// The process exit code.
+/// The process exit code (0 = success).
 pub fn runScript(allocator: std.mem.Allocator, cmd: []const u8, cwd: []const u8) !u8 {
-    var child = std.process.Child.init(
-        if (builtin.os.tag == .windows)
-            &[_][]const u8{ "cmd.exe", "/c", cmd }
-        else
-            &[_][]const u8{ "/bin/sh", "-c", cmd },
-        allocator,
-    );
+    return runScriptWithArgs(allocator, cmd, cwd, &.{});
+}
+
+/// Like `runScript` but appends `extra_args` to the command string.
+///
+/// Extra args are shell-escaped and appended after the script body so that
+/// `nayr build -- --watch` correctly passes `--watch` to the script command.
+pub fn runScriptWithArgs(
+    allocator: std.mem.Allocator,
+    cmd: []const u8,
+    cwd: []const u8,
+    extra_args: []const []const u8,
+) !u8 {
+    const bin_dir = try std.fs.path.join(allocator, &.{ cwd, "node_modules", ".bin" });
+    defer allocator.free(bin_dir);
+
+    // Build the full command, appending any extra args.
+    const full_cmd = if (extra_args.len > 0) blk: {
+        var parts = std.ArrayList([]const u8).init(allocator);
+        defer parts.deinit();
+        try parts.append(cmd);
+        for (extra_args) |a| try parts.append(a);
+        break :blk try std.mem.join(allocator, " ", parts.items);
+    } else try allocator.dupe(u8, cmd);
+    defer allocator.free(full_cmd);
+
+    // Build child argv.
+    const argv: []const []const u8 = if (builtin.os.tag == .windows)
+        &.{ "cmd.exe", "/c", full_cmd }
+    else
+        &.{ "/bin/sh", "-c", full_cmd };
+
+    var child = std.process.Child.init(argv, allocator);
     child.cwd = cwd;
     child.stdin_behavior = .Inherit;
     child.stdout_behavior = .Inherit;
     child.stderr_behavior = .Inherit;
+
+    // Inject node_modules/.bin into PATH so scripts can call local binaries.
+    var env_map = try std.process.getEnvMap(allocator);
+    defer env_map.deinit();
+    if (env_map.get("PATH")) |old_path| {
+        const new_path = try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{
+            bin_dir,
+            std.fs.path.delimiter,
+            old_path,
+        });
+        defer allocator.free(new_path);
+        try env_map.put("PATH", new_path);
+    } else {
+        try env_map.put("PATH", bin_dir);
+    }
+    child.env_map = &env_map;
+
+    const result = try child.spawnAndWait();
+    return switch (result) {
+        .Exited => |code| code,
+        else => 1,
+    };
+}
+
+/// Runs a binary directly (no shell) with explicit argv.
+///
+/// Used when `nayr <name>` resolves to a binary in `node_modules/.bin` rather
+/// than a script entry in `package.json`.
+///
+/// ## Parameters
+/// - `allocator`: Allocator for argument arrays.
+/// - `bin_path`: Absolute path to the executable.
+/// - `args`: Arguments to pass (does NOT include the binary path at index 0).
+/// - `cwd`: Working directory for the child process.
+///
+/// ## Returns
+/// The process exit code.
+pub fn runBinary(
+    allocator: std.mem.Allocator,
+    bin_path: []const u8,
+    args: []const []const u8,
+    cwd: []const u8,
+) !u8 {
+    const bin_dir = try std.fs.path.join(allocator, &.{ cwd, "node_modules", ".bin" });
+    defer allocator.free(bin_dir);
+
+    var argv = std.ArrayList([]const u8).init(allocator);
+    defer argv.deinit();
+    try argv.append(bin_path);
+    try argv.appendSlice(args);
+
+    var child = std.process.Child.init(argv.items, allocator);
+    child.cwd = cwd;
+    child.stdin_behavior = .Inherit;
+    child.stdout_behavior = .Inherit;
+    child.stderr_behavior = .Inherit;
+
+    // Inject node_modules/.bin into PATH.
+    var env_map = try std.process.getEnvMap(allocator);
+    defer env_map.deinit();
+    if (env_map.get("PATH")) |old_path| {
+        const new_path = try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{
+            bin_dir,
+            std.fs.path.delimiter,
+            old_path,
+        });
+        defer allocator.free(new_path);
+        try env_map.put("PATH", new_path);
+    } else {
+        try env_map.put("PATH", bin_dir);
+    }
+    child.env_map = &env_map;
+
     const result = try child.spawnAndWait();
     return switch (result) {
         .Exited => |code| code,

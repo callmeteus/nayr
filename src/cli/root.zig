@@ -16,6 +16,7 @@ const std = @import("std");
 const output = @import("../util/output.zig");
 const platform = @import("../util/platform.zig");
 const config_loader = @import("../config/loader.zig");
+const build_options = @import("build_options");
 
 const install_cmd = @import("install.zig");
 const add_cmd = @import("add.zig");
@@ -30,8 +31,8 @@ const registry_cmd = @import("registry_cmd.zig");
 const login_cmd = @import("login.zig");
 const publish_cmd = @import("publish.zig");
 
-/// nayr version string.
-pub const VERSION = "0.1.0";
+/// nayr version string — embedded from package.json at build time.
+pub const VERSION = build_options.version;
 
 // ============================================================================
 // Global options
@@ -65,6 +66,7 @@ pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len < 2) {
         var default_opts = defaultGlobalOpts(allocator);
         defer default_opts.deinit(allocator);
+        output.printBanner(default_opts.format, default_opts.silent);
         return runInstall(allocator, args, default_opts);
     }
 
@@ -73,14 +75,36 @@ pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var opts = global.opts;
     defer opts.deinit(allocator);
 
-    // Version flag.
+    // When only global flags were provided (no sub-command), run install.
     if (remaining.len == 0) {
+        output.printBanner(opts.format, opts.silent);
         try runInstall(allocator, remaining, opts);
         return;
     }
 
     const cmd = remaining[0];
     const cmd_args = remaining[1..];
+
+    // --version / --help: no banner, just print and exit.
+    if (std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "-v")) {
+        const colour = output.hasTtyStderr();
+        if (colour) {
+            std.io.getStdOut().writer().print(
+                "\x1b[1mnayr\x1b[0m \x1b[2mv{s}\x1b[0m\n",
+                .{VERSION},
+            ) catch {};
+        } else {
+            std.io.getStdOut().writer().print("nayr v{s}\n", .{VERSION}) catch {};
+        }
+        return;
+    }
+    if (std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
+        printHelp();
+        return;
+    }
+
+    // Print banner for all other commands.
+    output.printBanner(opts.format, opts.silent);
 
     // Initialise the output writer.
     const fmt = opts.format;
@@ -127,18 +151,14 @@ pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !void {
         try publish_cmd.runPack(allocator, cmd_args, opts.cwd, &config, writer);
     } else if (std.mem.eql(u8, cmd, "cache")) {
         try runCache(allocator, cmd_args, opts.cwd, &config, writer);
-    } else if (std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "-v")) {
-        try std.io.getStdOut().writer().print("nayr {s}\n", .{VERSION});
-    } else if (std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
-        printHelp();
     } else if (std.mem.eql(u8, cmd, "run")) {
         // `nayr run <script>` - run a script from package.json.
         try runScript(allocator, cmd_args, opts.cwd, writer);
     } else {
         // Unknown command - treat as a script name (Yarn Classic behaviour:
         // `yarn build` runs the "build" script from package.json).
-        const script_args = args[1..];
-        try runScript(allocator, script_args, opts.cwd, writer);
+        // Use `remaining` (global flags already stripped) not the raw args.
+        try runScript(allocator, remaining, opts.cwd, writer);
     }
 }
 
@@ -183,6 +203,15 @@ fn runCache(
     }
 }
 
+/// Resolves and runs a script or local binary.
+///
+/// Resolution order (mirrors Yarn Classic / npm):
+///   1. `scripts` field in `package.json`  - run via shell with extra args appended
+///   2. `node_modules/.bin/<name>`         - run as direct binary with extra args
+///   3. Neither found                      - print error and exit 1
+///
+/// Everything after `--` (or after the script name when using `nayr run`) is
+/// forwarded as extra arguments to the underlying command.
 fn runScript(
     allocator: std.mem.Allocator,
     args: []const []const u8,
@@ -193,20 +222,56 @@ fn runScript(
         printHelp();
         return;
     }
+
+    // Split: script name vs extra args (everything after `--` or just the tail).
     const script_name = args[0];
+    const extra_args = blk: {
+        // Strip leading `--` separator if present.
+        if (args.len > 1 and std.mem.eql(u8, args[1], "--")) {
+            break :blk args[2..];
+        }
+        break :blk args[1..];
+    };
+
     const json_util = @import("../util/json.zig");
     const manifest_path = try std.fs.path.join(allocator, &.{ cwd, "package.json" });
     defer allocator.free(manifest_path);
-    const manifest = try json_util.parseFile(allocator, manifest_path);
-    const cmd = manifest.scripts.get(script_name) orelse {
-        writer.emit(.{ .err = try std.fmt.allocPrint(allocator, "script not found: {s}", .{script_name}) });
+
+    // --- 1. Try package.json scripts ---
+    if (json_util.parseFile(allocator, manifest_path)) |manifest_val| {
+        var manifest = manifest_val;
+        defer manifest.deinit(allocator);
+        if (manifest.scripts.get(script_name)) |cmd| {
+            // Dupe the command string before freeing the manifest so the
+            // platform runner gets a stable slice.
+            const cmd_owned = try allocator.dupe(u8, cmd);
+            defer allocator.free(cmd_owned);
+            writer.emit(.{ .script_start = .{ .name = script_name, .script = cmd_owned } });
+            const exit_code = try platform.runScriptWithArgs(allocator, cmd_owned, cwd, extra_args);
+            if (exit_code != 0) std.process.exit(exit_code);
+            return;
+        }
+    } else |_| {} // no package.json or parse error - fall through
+
+    // --- 2. Try node_modules/.bin/<name> ---
+    const bin_path = try std.fs.path.join(allocator, &.{ cwd, "node_modules", ".bin", script_name });
+    defer allocator.free(bin_path);
+
+    if (std.fs.accessAbsolute(bin_path, .{})) |_| {
+        writer.emit(.{ .script_start = .{ .name = script_name, .script = bin_path } });
+        const exit_code = try platform.runBinary(allocator, bin_path, extra_args, cwd);
+        if (exit_code != 0) std.process.exit(exit_code);
         return;
-    };
-    writer.emit(.{ .script_start = .{ .name = script_name, .script = cmd } });
-    const exit_code = try platform.runScript(allocator, cmd, cwd);
-    if (exit_code != 0) {
-        return error.ScriptFailed;
-    }
+    } else |_| {}
+
+    // --- 3. Not found ---
+    const stderr = std.io.getStdErr().writer();
+    stderr.print(
+        "error: Command \"{s}\" not found.\n" ++
+            "       Not a script in package.json and not in node_modules/.bin/.\n",
+        .{script_name},
+    ) catch {};
+    std.process.exit(1);
 }
 
 // ============================================================================
@@ -267,43 +332,79 @@ fn defaultGlobalOpts(allocator: std.mem.Allocator) GlobalOptions {
 }
 
 fn printHelp() void {
-    const help =
-        \\nayr - fast Node.js package manager (Yarn Classic compatible)
-        \\
-        \\Usage: nayr [options] <command> [args]
-        \\
-        \\Commands:
-        \\  install / i          Install all dependencies
-        \\  add <pkg...>         Add package(s) to package.json
-        \\  remove / rm <pkg...> Remove package(s)
-        \\  upgrade [pkg...]     Upgrade package(s)
-        \\  link [name]          Register or use a local package link
-        \\  unlink [name]        Remove a local package link
-        \\  mklink [glob]        Register multiple packages via glob
-        \\  autolink             Auto-link all registered packages
-        \\  audit                Run security audit
-        \\  why <pkg>            Explain why a package is installed
-        \\  licenses list        List all package licenses
-        \\  workspace <ws> <cmd> Run a command in a specific workspace
-        \\  workspaces info      List all workspaces
-        \\  registry sync        Sync private registry scopes to .npmrc
-        \\  login                Authenticate against registry/registries
-        \\  logout               Remove stored credentials
-        \\  publish              Publish the current package
-        \\  pack                 Create a tarball without publishing
-        \\  run <script>         Run a package.json script
-        \\  cache list           List cached packages
-        \\  cache clean          Remove all cached packages
-        \\
-        \\Global options:
-        \\  --format=tui|text|json  Output format (default: tui when TTY)
-        \\  --verbose / -v          Verbose output
-        \\  --silent / -s           Suppress all output except errors
-        \\  --no-color              Disable ANSI colours
-        \\  --cwd <path>            Set working directory
-        \\  --version               Print version and exit
-        \\  --help / -h             Print this help
-        \\
-    ;
-    std.io.getStdOut().writer().writeAll(help) catch {};
+    const w = std.io.getStdOut().writer();
+    const c = output.hasTtyStderr();
+
+    // Colour helpers — fall back to empty strings when colour is off.
+    const bold   = if (c) "\x1b[1m"    else "";
+    const dim    = if (c) "\x1b[2m"    else "";
+    const cyan   = if (c) "\x1b[36m"   else "";
+    const yellow = if (c) "\x1b[33m"   else "";
+    const green  = if (c) "\x1b[32m"   else "";
+    const reset  = if (c) "\x1b[0m"    else "";
+
+    // Header
+    w.print(
+        "{s}nayr{s} {s}v{s}{s}  {s}fast · lock-free · yarn-compatible{s}\n\n",
+        .{ bold, reset, dim, VERSION, reset, dim, reset },
+    ) catch {};
+
+    // Usage
+    w.print("{s}Usage{s}\n  nayr {s}[options]{s} {s}<command>{s} [args]\n\n", .{
+        bold, reset, dim, reset, cyan, reset,
+    }) catch {};
+
+    // Commands section
+    w.print("{s}Commands{s}\n", .{ bold, reset }) catch {};
+
+    const Cmd = struct { name: []const u8, desc: []const u8 };
+    const cmds = [_]Cmd{
+        .{ .name = "install",         .desc = "Install all dependencies" },
+        .{ .name = "add <pkg...>",    .desc = "Add package(s) to package.json" },
+        .{ .name = "remove <pkg...>", .desc = "Remove package(s)" },
+        .{ .name = "upgrade [pkg...]",.desc = "Upgrade package(s)" },
+        .{ .name = "run <script>",    .desc = "Run a package.json script" },
+        .{ .name = "link [name]",     .desc = "Register or use a local package link" },
+        .{ .name = "unlink [name]",   .desc = "Remove a local package link" },
+        .{ .name = "mklink [glob]",   .desc = "Register multiple packages via glob" },
+        .{ .name = "autolink",        .desc = "Auto-link all registered packages" },
+        .{ .name = "audit",           .desc = "Run security audit" },
+        .{ .name = "why <pkg>",       .desc = "Explain why a package is installed" },
+        .{ .name = "licenses list",   .desc = "List all package licenses" },
+        .{ .name = "workspace <w> <cmd>", .desc = "Run a command in a specific workspace" },
+        .{ .name = "workspaces info", .desc = "List all workspaces" },
+        .{ .name = "registry sync",   .desc = "Sync private registry scopes to .npmrc" },
+        .{ .name = "login",           .desc = "Authenticate against registry/registries" },
+        .{ .name = "logout",          .desc = "Remove stored credentials" },
+        .{ .name = "publish",         .desc = "Publish the current package" },
+        .{ .name = "pack",            .desc = "Create a tarball without publishing" },
+        .{ .name = "cache list",      .desc = "List cached packages" },
+        .{ .name = "cache clean",     .desc = "Remove all cached packages" },
+    };
+    for (cmds) |cmd| {
+        w.print("  {s}{s:<26}{s}{s}{s}{s}\n", .{
+            green, cmd.name, reset, dim, cmd.desc, reset,
+        }) catch {};
+    }
+
+    // Options section
+    w.print("\n{s}Options{s}\n", .{ bold, reset }) catch {};
+
+    const Opt = struct { flag: []const u8, desc: []const u8 };
+    const opts_list = [_]Opt{
+        .{ .flag = "--format=tui|text|json", .desc = "Output format (default: tui when TTY)" },
+        .{ .flag = "--verbose  / -v",        .desc = "Verbose output" },
+        .{ .flag = "--silent   / -s",        .desc = "Suppress all output except errors" },
+        .{ .flag = "--no-color",             .desc = "Disable ANSI colours" },
+        .{ .flag = "--cwd <path>",           .desc = "Set working directory" },
+        .{ .flag = "--version",              .desc = "Print version and exit" },
+        .{ .flag = "--help     / -h",        .desc = "Print this help" },
+    };
+    for (opts_list) |opt| {
+        w.print("  {s}{s:<28}{s}{s}{s}{s}\n", .{
+            yellow, opt.flag, reset, dim, opt.desc, reset,
+        }) catch {};
+    }
+
+    w.print("\n", .{}) catch {};
 }

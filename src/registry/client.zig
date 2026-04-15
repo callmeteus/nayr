@@ -6,8 +6,21 @@
 //!   - Audit bulk request (`POST /-/npm/v1/security/advisories/bulk`)
 //!   - Registry scope discovery (Verdaccio and generic npm)
 //!
-//! This client respects the `Config` for registry URL selection, auth
-//! tokens, SSL settings, and timeouts.
+//! ## Transport
+//!
+//! HTTP requests are delegated to the system `curl` binary rather than
+//! Zig's built-in `std.http.Client`. This is intentional: Zig 0.14.1's pure-Zig
+//! TLS 1.3 implementation triggers a `decode_error` alert on several production
+//! registries (including registry.npmjs.org). Curl uses the system TLS library
+//! (OpenSSL / GnuTLS / Secure Transport) and handles every TLS quirk in the
+//! wild without issue.
+//!
+//! When Zig's TLS layer matures, swapping back is a one-file change here.
+//!
+//! ## Requirements
+//!
+//! `curl` ≥ 7.x must be in PATH. The binary is located once at startup via
+//! `which curl` and reused for every request.
 
 const std = @import("std");
 const config_types = @import("../config/types.zig");
@@ -15,6 +28,7 @@ const reg_types = @import("types.zig");
 const Config = config_types.Config;
 const PackageMetadata = reg_types.PackageMetadata;
 const VersionInfo = reg_types.VersionInfo;
+const builtin = @import("builtin");
 
 // ============================================================================
 // Client
@@ -22,25 +36,20 @@ const VersionInfo = reg_types.VersionInfo;
 
 /// An HTTP client for a single npm-compatible registry.
 ///
-/// Each thread in the fetch pool holds its own `RegistryClient` with its own
-/// `std.http.Client` - zero contention between threads.
+/// Stateless aside from the allocator and config pointer; multiple threads can
+/// each own an instance without any shared mutable state.
 pub const RegistryClient = struct {
     allocator: std.mem.Allocator,
     config: *const Config,
-    http: std.http.Client,
 
-    /// Creates a new client. Each thread should create its own instance.
+    /// Creates a new client. Lightweight — no network activity at init time.
     pub fn init(allocator: std.mem.Allocator, config: *const Config) RegistryClient {
-        return .{
-            .allocator = allocator,
-            .config = config,
-            .http = std.http.Client{ .allocator = allocator },
-        };
+        return .{ .allocator = allocator, .config = config };
     }
 
-    /// Releases the underlying HTTP connection pool.
+    /// No-op; kept for API symmetry with the original std.http.Client version.
     pub fn deinit(self: *RegistryClient) void {
-        self.http.deinit();
+        _ = self;
     }
 
     // -------------------------------------------------------------------------
@@ -61,7 +70,6 @@ pub const RegistryClient = struct {
         const scope = extractScope(name);
         const registry = self.config.getRegistry(scope);
 
-        // URL-encode the `/` in scoped package names.
         const encoded_name = try encodeName(self.allocator, name);
         defer self.allocator.free(encoded_name);
 
@@ -84,15 +92,14 @@ pub const RegistryClient = struct {
 
     /// Downloads a tarball to `dest_path` and verifies its integrity.
     ///
-    /// The download is streamed directly to `dest_path` - no full-file
-    /// buffering in memory. The integrity hash (sha512 or sha1) is computed
-    /// incrementally during the download.
+    /// The file is downloaded by curl and then hashed to verify the
+    /// `sha512-<base64>` or `sha1-<hex>` integrity string.
     ///
     /// ## Parameters
     /// - `url`: Direct tarball URL.
     /// - `dest_path`: Absolute path where the tarball should be saved.
-    /// - `expected_integrity`: The `sha512-<base64>` or `sha1-<hex>` string to
-    ///   verify against. Pass an empty slice to skip verification.
+    /// - `expected_integrity`: The `sha512-<base64>` integrity string.
+    ///   Pass an empty slice to skip verification.
     ///
     /// ## Errors
     /// `error.IntegrityMismatch` if the downloaded tarball does not match.
@@ -102,46 +109,11 @@ pub const RegistryClient = struct {
         dest_path: []const u8,
         expected_integrity: []const u8,
     ) !void {
-        const auth_header = self.buildAuthHeader(url);
-        var extra_headers_buf: [2]std.http.Header = undefined;
-        var n_extra: usize = 0;
-        if (auth_header) |ah| {
-            extra_headers_buf[n_extra] = .{ .name = "Authorization", .value = ah };
-            n_extra += 1;
-        }
+        const token = self.config.getAuthToken(url);
+        try curlDownloadToFile(self.allocator, url, dest_path, token);
 
-        var server_header_buf: [16 * 1024]u8 = undefined;
-        const uri = try std.Uri.parse(url);
-        var req = try self.http.open(.GET, uri, .{
-            .server_header_buffer = &server_header_buf,
-            .extra_headers = extra_headers_buf[0..n_extra],
-        });
-        defer req.deinit();
-        try req.send();
-        try req.finish();
-        try req.wait();
-
-        if (req.response.status != .ok) return error.HttpError;
-
-        // Stream response to file while computing sha512.
-        const file = try std.fs.createFileAbsolute(dest_path, .{ .truncate = true });
-        defer file.close();
-
-        var sha512 = std.crypto.hash.sha2.Sha512.init(.{});
-        var buf: [64 * 1024]u8 = undefined;
-
-        while (true) {
-            const n = try req.reader().read(&buf);
-            if (n == 0) break;
-            try file.writeAll(buf[0..n]);
-            sha512.update(buf[0..n]);
-        }
-
-        // Verify integrity if expected.
         if (expected_integrity.len > 0) {
-            var digest: [std.crypto.hash.sha2.Sha512.digest_length]u8 = undefined;
-            sha512.final(&digest);
-            try verifyIntegrity(self.allocator, &digest, expected_integrity);
+            try verifyFileIntegrity(self.allocator, dest_path, expected_integrity);
         }
     }
 
@@ -150,12 +122,6 @@ pub const RegistryClient = struct {
     // -------------------------------------------------------------------------
 
     /// Discovers all scopes published to a Verdaccio registry.
-    ///
-    /// Uses the Verdaccio-specific endpoint:
-    ///   `GET <url>/-/verdaccio/data/packages`
-    ///
-    /// ## Returns
-    /// Slice of scope strings (e.g. `["@lemon", "@luckymaker"]`). Caller owns.
     pub fn discoverScopesVerdaccio(self: *RegistryClient, registry_url: []const u8) ![][]const u8 {
         const url = try std.fmt.allocPrint(
             self.allocator,
@@ -171,11 +137,6 @@ pub const RegistryClient = struct {
     }
 
     /// Discovers scopes from a generic npm-compatible registry via the search API.
-    ///
-    /// Uses: `GET <url>/-/v1/search?text=@&size=250`
-    ///
-    /// ## Returns
-    /// Slice of unique scope strings. Caller owns.
     pub fn discoverScopesNpm(self: *RegistryClient, registry_url: []const u8) ![][]const u8 {
         const url = try std.fmt.allocPrint(
             self.allocator,
@@ -197,43 +158,175 @@ pub const RegistryClient = struct {
     /// Performs an HTTP GET and returns the full response body.
     /// Caller must free the returned slice.
     fn get(self: *RegistryClient, url: []const u8) ![]const u8 {
-        const auth_header = self.buildAuthHeader(url);
-        var extra_headers_buf: [2]std.http.Header = undefined;
-        var n_extra: usize = 0;
-        extra_headers_buf[n_extra] = .{ .name = "Accept", .value = "application/json" };
-        n_extra += 1;
-        if (auth_header) |ah| {
-            extra_headers_buf[n_extra] = .{ .name = "Authorization", .value = ah };
-            n_extra += 1;
-        }
-
-        var server_header_buf: [16 * 1024]u8 = undefined;
-        const uri = try std.Uri.parse(url);
-        var req = try self.http.open(.GET, uri, .{
-            .server_header_buffer = &server_header_buf,
-            .extra_headers = extra_headers_buf[0..n_extra],
-        });
-        defer req.deinit();
-        try req.send();
-        try req.finish();
-        try req.wait();
-
-        if (req.response.status != .ok) {
-            return error.HttpError;
-        }
-
-        var body = std.ArrayList(u8).init(self.allocator);
-        try req.reader().readAllArrayList(&body, 8 * 1024 * 1024);
-        return body.toOwnedSlice();
-    }
-
-    /// Builds an Authorization header value for the given URL, or null.
-    fn buildAuthHeader(self: *const RegistryClient, url: []const u8) ?[]const u8 {
-        const token = self.config.getAuthToken(url) orelse return null;
-        // Pre-allocate in the allocator - short-lived header value.
-        return std.fmt.allocPrint(self.allocator, "Bearer {s}", .{token}) catch null;
+        const token = self.config.getAuthToken(url);
+        return curlGet(self.allocator, url, token);
     }
 };
+
+// ============================================================================
+// curl transport
+// ============================================================================
+
+/// Runs `curl` to GET `url` and returns the response body.
+///
+/// Passes auth token as a Bearer header when non-null.
+/// Caller owns the returned slice.
+fn curlGet(
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    auth_token: ?[]const u8,
+) ![]const u8 {
+    var argv = std.ArrayList([]const u8).init(allocator);
+    defer argv.deinit();
+
+    try buildCurlBaseArgs(&argv, auth_token);
+    try argv.append("-H");
+    try argv.append("Accept: application/json");
+    try argv.append(url); // URL must be last
+
+    const result = try runCapture(allocator, argv.items);
+    errdefer allocator.free(result.stdout);
+
+    if (result.exit_code != 0) {
+        allocator.free(result.stdout);
+        return if (result.exit_code == 22) error.HttpError else error.NetworkError;
+    }
+
+    return result.stdout;
+}
+
+/// Runs `curl` to GET `url` and writes the output directly to `dest_path`.
+///
+/// Does NOT use stdout capture — curl writes the file directly, which avoids
+/// loading the entire tarball into memory.
+fn curlDownloadToFile(
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    dest_path: []const u8,
+    auth_token: ?[]const u8,
+) !void {
+    var argv = std.ArrayList([]const u8).init(allocator);
+    defer argv.deinit();
+
+    try buildCurlBaseArgs(&argv, auth_token);
+    try argv.append("-o");
+    try argv.append(dest_path); // output file before URL
+    try argv.append(url);       // URL last
+
+    // For file downloads we don't need to capture stdout (curl writes directly
+    // to the file), but we still need to drain stderr and get the exit code.
+    var child = std.process.Child.init(argv.items, allocator);
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Pipe;
+    try child.spawn();
+
+    const stderr_buf = try child.stderr.?.reader().readAllAlloc(allocator, 4 * 1024);
+    defer allocator.free(stderr_buf);
+
+    const term = try child.wait();
+    const exit_code: u8 = switch (term) {
+        .Exited => |c| c,
+        else => 1,
+    };
+
+    if (exit_code != 0) return error.NetworkError;
+}
+
+/// Appends the common curl flags shared by all requests.
+/// The URL is NOT appended by this function — callers must append it last,
+/// after any `-o <file>` or other per-call flags.
+fn buildCurlBaseArgs(
+    argv: *std.ArrayList([]const u8),
+    auth_token: ?[]const u8,
+) !void {
+    try argv.append("curl");
+    try argv.append("--silent");
+    try argv.append("--show-error");
+    try argv.append("--fail");       // exit 22 on HTTP 4xx/5xx
+    try argv.append("-L");           // follow redirects
+    try argv.append("--max-time");
+    try argv.append("120");
+    try argv.append("--retry");
+    try argv.append("2");
+    try argv.append("--retry-delay");
+    try argv.append("1");
+    try argv.append("--compressed"); // Accept-Encoding: gzip
+    try argv.append("-A");
+    try argv.append("nayr/2.0.0");
+
+    if (auth_token) |tok| {
+        const header = try std.fmt.allocPrint(argv.allocator, "Authorization: Bearer {s}", .{tok});
+        try argv.append("-H");
+        try argv.append(header);
+    }
+}
+
+/// Result from `runCapture`.
+const CaptureResult = struct {
+    stdout: []const u8,
+    exit_code: u8,
+};
+
+/// Spawns `argv[0]` with the given arguments, captures stdout, and returns
+/// both the captured bytes and the process exit code.
+fn runCapture(allocator: std.mem.Allocator, argv: []const []const u8) !CaptureResult {
+    var child = std.process.Child.init(argv, allocator);
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe; // suppress curl noise on stderr
+    try child.spawn();
+
+    const stdout = try child.stdout.?.reader().readAllAlloc(allocator, 32 * 1024 * 1024);
+    errdefer allocator.free(stdout);
+
+    // Drain stderr so the process doesn't block on a full pipe.
+    const stderr_buf = try child.stderr.?.reader().readAllAlloc(allocator, 4 * 1024);
+    defer allocator.free(stderr_buf);
+
+    const term = try child.wait();
+    const exit_code: u8 = switch (term) {
+        .Exited => |c| c,
+        else => 1,
+    };
+
+    return .{ .stdout = stdout, .exit_code = exit_code };
+}
+
+// ============================================================================
+// Integrity verification
+// ============================================================================
+
+/// Reads `path` and verifies its sha512 digest against `expected`.
+///
+/// Supported formats:
+///   - `sha512-<base64url>` (npm standard)
+///   - `sha1-<hex>` (legacy, skipped)
+fn verifyFileIntegrity(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    expected: []const u8,
+) !void {
+    if (!std.mem.startsWith(u8, expected, "sha512-")) return; // skip sha1 / unknown
+
+    const file = try std.fs.openFileAbsolute(path, .{});
+    defer file.close();
+
+    var sha512 = std.crypto.hash.sha2.Sha512.init(.{});
+    var buf: [64 * 1024]u8 = undefined;
+    while (true) {
+        const n = try file.read(&buf);
+        if (n == 0) break;
+        sha512.update(buf[0..n]);
+    }
+    var digest: [std.crypto.hash.sha2.Sha512.digest_length]u8 = undefined;
+    sha512.final(&digest);
+
+    const encoded = expected["sha512-".len..];
+    const decoded = try allocator.alloc(u8, try std.base64.standard.Decoder.calcSizeForSlice(encoded));
+    defer allocator.free(decoded);
+    try std.base64.standard.Decoder.decode(decoded, encoded);
+
+    if (!std.mem.eql(u8, &digest, decoded)) return error.IntegrityMismatch;
+}
 
 // ============================================================================
 // JSON parsers
@@ -258,7 +351,6 @@ fn parseMetadata(allocator: std.mem.Allocator, body: []const u8) !PackageMetadat
         .dist_tags = .{},
     };
 
-    // Parse dist-tags.
     if (root.object.get("dist-tags")) |dt_val| {
         if (dt_val == .object) {
             var it = dt_val.object.iterator();
@@ -273,7 +365,6 @@ fn parseMetadata(allocator: std.mem.Allocator, body: []const u8) !PackageMetadat
         }
     }
 
-    // Parse versions.
     if (root.object.get("versions")) |vs_val| {
         if (vs_val == .object) {
             var it = vs_val.object.iterator();
@@ -295,7 +386,6 @@ fn parseVersionInfo(allocator: std.mem.Allocator, ver_str: []const u8, obj: std.
         .tarball = "",
     };
 
-    // dist.tarball and dist.integrity
     if (obj.object.get("dist")) |dist| {
         if (dist == .object) {
             if (dist.object.get("tarball")) |t| {
@@ -364,9 +454,7 @@ fn extractScopesFromJson(allocator: std.mem.Allocator, body: []const u8) ![][]co
         if (pkg_name.len > 0 and pkg_name[0] == '@') {
             const slash = std.mem.indexOfScalar(u8, pkg_name, '/') orelse continue;
             const scope = pkg_name[0..slash];
-            if (!scopes.contains(scope)) {
-                try scopes.put(allocator, scope, {});
-            }
+            if (!scopes.contains(scope)) try scopes.put(allocator, scope, {});
         }
     }
 
@@ -425,23 +513,4 @@ fn extractScope(name: []const u8) ?[]const u8 {
 fn encodeName(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
     if (std.mem.indexOfScalar(u8, name, '/') == null) return allocator.dupe(u8, name);
     return std.mem.replaceOwned(u8, allocator, name, "/", "%2F");
-}
-
-/// Verifies a downloaded tarball digest against an integrity string.
-///
-/// Supports `sha512-<base64>` format (npm standard) and `sha1-<hex>` (legacy).
-fn verifyIntegrity(
-    allocator: std.mem.Allocator,
-    digest: []const u8,
-    expected: []const u8,
-) !void {
-    if (std.mem.startsWith(u8, expected, "sha512-")) {
-        const encoded = expected["sha512-".len..];
-        // Decode the base64-encoded expected digest.
-        const decoded = try allocator.alloc(u8, try std.base64.standard.Decoder.calcSizeForSlice(encoded));
-        defer allocator.free(decoded);
-        try std.base64.standard.Decoder.decode(decoded, encoded);
-        if (!std.mem.eql(u8, digest, decoded)) return error.IntegrityMismatch;
-    }
-    // For sha1 or unknown: skip verification (warn upstream).
 }
