@@ -272,7 +272,7 @@ pub fn resolve(
             // 1. Workspace hit.
             if (ws_res.resolve(req.name, effective_range)) |ws_pkg| {
                 const rp = ResolvedPackage{
-                    .name = req.name,
+                    .name = try allocator.dupe(u8, req.name),
                     .version = try allocator.dupe(u8, ws_pkg.manifest.version orelse "0.0.0"),
                     .tarball_url = "",
                     .integrity = "",

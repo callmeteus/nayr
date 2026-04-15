@@ -23,19 +23,30 @@ Yarn Classic is slow and ships a massive JavaScript runtime just to move files a
 
 ## Benchmarks
 
-> Fixture: `lodash`, `ms`, `is-odd` — median of 5 runs on the same machine.  
+> Median of 5 runs on the same machine (Linux, AMD Ryzen 9, NVMe SSD).  
 > Run your own: `sh tests/bench/bench.sh --runs 5`
 
-| Scenario | nayr | yarn | Speedup |
+### Simple fixture (`lodash`, `ms`, `is-odd`)
+
+| Scenario | nayr | yarn 1.22 | Speedup |
 |---|---|---|---|
-| **cold install** (no cache, no lockfile) | 623 ms | 795 ms | **1.3× faster** |
-| **warm install** (cache hit, no lockfile) | 421 ms | 533 ms | **1.3× faster** |
-| **locked install** (cache + lockfile, fresh `node_modules`) | 434 ms | 290 ms | yarn wins |
-| **no-op install** (nothing changed) | **2 ms** | 208 ms | **104× faster** |
+| **cold install** (no cache, no lockfile) | 428 ms | 1010 ms | **2.4×** |
+| **warm install** (cache hit, no lockfile) | 214 ms | 694 ms | **3.2×** |
+| **locked install** (cache + lockfile, fresh `node_modules`) | 212 ms | 442 ms | **2.1×** |
+| **no-op** (nothing changed) | **2 ms** | 337 ms | **168×** |
 
-The no-op path is the one developers hit constantly. nayr exits in ~2 ms; yarn takes ~200 ms of Node.js startup before it even checks whether anything has changed.
+### Workspace fixture (root + 2 packages, 5 deps total)
 
-The locked-install scenario currently favors yarn because nayr re-resolves the dependency graph even with a lockfile present — lockfile-as-a-source-of-truth is a planned optimization.
+| Scenario | nayr | yarn 1.22 | Speedup |
+|---|---|---|---|
+| **cold install** | 415 ms | 984 ms | **2.4×** |
+| **warm install** | 213 ms | 642 ms | **3.0×** |
+| **locked install** | 217 ms | 402 ms | **1.9×** |
+| **no-op** | **2 ms** | 351 ms | **175×** |
+
+The no-op path is the one developers hit on every save/switch. nayr exits in ~2 ms by checking an integrity stamp; yarn spends ~340 ms in Node.js startup before it can even begin.
+
+Resolution is parallelised via a FIFO worker pool: as soon as any package metadata arrives, its transitive deps are pushed to free workers immediately — no waiting for an entire "wave" to finish. Fetching and linking are also fully parallel.
 
 ---
 
