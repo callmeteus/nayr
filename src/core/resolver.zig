@@ -13,11 +13,19 @@
 //!   4. Apply `resolutions` field overrides.
 //!   5. Recurse for transitive dependencies (BFS, cycle-safe).
 //!
-//! The resolver is designed to be called once per `nayr install` invocation.
-//! It is single-threaded (BFS queue) because dependency resolution is
-//! inherently sequential (you need A's version to know what B to resolve).
-//! Network I/O (registry metadata fetches) is the only concurrent part,
-//! implemented via a thread pool in the fetcher stage.
+//! ## Parallelism
+//!
+//! Resolution uses a **FIFO worker-pool BFS**. N worker threads live for the
+//! entire resolve() call. The main thread classifies each dep request:
+//!
+//!   - Workspace / lockfile / git: resolved immediately (no I/O).
+//!   - Registry: pushed to the fetch queue for a free worker.
+//!
+//! Workers fetch metadata and push results back via a result queue. The main
+//! thread processes results as they arrive and immediately queues transitive
+//! deps — no waiting for an entire "wave" to finish. This gives true FIFO
+//! pipeline behaviour: deeper levels start fetching as soon as their parent
+//! result is ready, not after all siblings complete.
 
 const std = @import("std");
 const semver = @import("../semver/parser.zig");
@@ -26,6 +34,7 @@ const lockfile_types = @import("../lockfile/types.zig");
 const yarn_v1 = @import("../lockfile/yarn_v1.zig");
 const nayr_fmt = @import("../lockfile/nayr_format.zig");
 const registry_client = @import("../registry/client.zig");
+const reg_types = @import("../registry/types.zig");
 const config_types = @import("../config/types.zig");
 const ws_discovery = @import("../workspace/discovery.zig");
 const ws_resolver = @import("../workspace/resolver.zig");
@@ -119,6 +128,8 @@ pub const ResolverOptions = struct {
     force: bool = false,
     /// Include only devDependencies.
     dev_only: bool = false,
+    /// Number of parallel metadata-fetch threads per wave.
+    concurrency: u32 = 32,
 };
 
 // ============================================================================
@@ -147,7 +158,6 @@ pub fn resolve(
     defer allocator.free(yarn_lock_path);
 
     var existing_lock: Lockfile = blk: {
-        // Prefer nayr.lock; fall back to yarn.lock v1 for migration.
         if (std.fs.accessAbsolute(nayr_lock_path, .{})) |_| {
             break :blk try nayr_fmt.parseFile(allocator, nayr_lock_path);
         } else |_| {}
@@ -168,9 +178,9 @@ pub fn resolve(
     var root_manifest = try json_util.parseFile(allocator, root_manifest_path);
     defer root_manifest.deinit(allocator);
 
-    // --- Build registry client ---
-    var client = registry_client.RegistryClient.init(allocator, config);
-    defer client.deinit();
+    // Thread-safe allocator: workers allocate metadata on the same GPA.
+    var ts_wrapper = std.heap.ThreadSafeAllocator{ .child_allocator = allocator };
+    const ts_alloc = ts_wrapper.allocator();
 
     // --- Collect seed dependencies ---
     var queue = std.ArrayList(DepRequest).init(allocator);
@@ -184,15 +194,11 @@ pub fn resolve(
         visited.deinit(allocator);
     }
 
-    // Seed from root manifest.
     try enqueueDeps(allocator, &queue, &root_manifest, opts);
-
-    // Seed from each workspace manifest.
     for (workspaces) |*ws| {
         try enqueueDeps(allocator, &queue, &ws.manifest, opts);
     }
 
-    // Apply `resolutions` overrides.
     var overrides = std.StringHashMapUnmanaged([]const u8){};
     defer overrides.deinit(allocator);
     var ov_it = root_manifest.resolutions.iterator();
@@ -200,128 +206,211 @@ pub fn resolve(
         try overrides.put(allocator, kv.key_ptr.*, kv.value_ptr.*);
     }
 
-    // --- BFS resolution loop ---
-    var qi: usize = 0;
-    while (qi < queue.items.len) : (qi += 1) {
-        const req = queue.items[qi];
+    // --- FIFO parallel BFS with persistent worker pool ---
+    //
+    // `queue` is the append-only BFS queue; `qi` is the next unclassified index.
+    // Fast paths (workspace / lockfile / git) are resolved inline by the main
+    // thread. Registry packages are pushed to `ch.fetch_items`; workers fetch
+    // their metadata and push `FetchResult` to `ch.result_items`.
+    //
+    // Main thread loop:
+    //   1. Drain all currently-available queue items (fast paths inline,
+    //      registry pushed to workers → in_flight++).
+    //   2. Wait for a result when in_flight > 0 and queue is exhausted.
+    //   3. Process result, enqueue transitive deps → back to step 1.
+    //
+    // Termination: qi >= queue.items.len AND in_flight == 0.
 
-        // Skip if already resolved.
-        const dedupe_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ req.name, req.range });
-        defer allocator.free(dedupe_key);
-        if (visited.contains(dedupe_key)) continue;
-        try visited.put(allocator, try allocator.dupe(u8, dedupe_key), {});
+    var ch = FifoChannels{
+        .ts_alloc = ts_alloc,
+        .config = config,
+        .fetch_mutex = .{},
+        .fetch_cond = .{},
+        .fetch_items = .{},
+        .result_mutex = .{},
+        .result_cond = .{},
+        .result_items = .{},
+        .shutdown = std.atomic.Value(bool).init(false),
+    };
 
-        // Apply resolutions override if present.
-        const effective_range = overrides.get(req.name) orelse req.range;
-
-        // 1. Try workspace resolution.
-        if (ws_res.resolve(req.name, effective_range)) |ws_pkg| {
-            const rp = ResolvedPackage{
-                .name = req.name,
-                // Dupe version so we can free workspace manifests after the loop.
-                .version = try allocator.dupe(u8, ws_pkg.manifest.version orelse "0.0.0"),
-                .tarball_url = "",
-                .integrity = "",
-                .registry = "",
-                .is_workspace = true,
-                .is_git = false,
-                .dependencies = .{},
-                .optional_dependencies = .{},
-            };
-            const key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ rp.name, rp.version });
-            try resolved_set.put(allocator, key, rp);
-            writer.emit(.{ .resolve_progress = .{
-                .resolved = @intCast(resolved_set.count()),
-                .total = @intCast(queue.items.len),
-                .name = req.name,
-            } });
-            continue;
+    const n_workers = opts.concurrency;
+    const worker_threads = try allocator.alloc(std.Thread, n_workers);
+    var workers_spawned: usize = 0;
+    defer {
+        ch.shutdown.store(true, .release);
+        ch.fetch_cond.broadcast();
+        for (worker_threads[0..workers_spawned]) |t| t.join();
+        allocator.free(worker_threads);
+        // Drain any buffered results left over from an early-exit on error.
+        for (ch.result_items.items) |*r| {
+            if (r.meta) |*m| m.deinit(allocator);
         }
+        ch.result_items.deinit(allocator);
+        ch.fetch_items.deinit(allocator);
+    }
+    for (worker_threads) |*t| {
+        t.* = try std.Thread.spawn(.{}, fifoWorker, .{&ch});
+        workers_spawned += 1;
+    }
 
-        // 2. Try lockfile hit.
-        const lock_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ req.name, effective_range });
-        defer allocator.free(lock_key);
-        if (!opts.force) {
-            if (existing_lock.get(lock_key)) |entry| {
-                if (semver.satisfies(allocator, entry.version, effective_range)) {
-                    const map_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ req.name, entry.version });
-                    if (resolved_set.contains(map_key)) {
-                        allocator.free(map_key);
-                    } else {
-                        const rp = try resolvedFromLockEntry(allocator, req.name, entry, config);
-                        try resolved_set.put(allocator, map_key, rp);
+    var qi: usize = 0;
+    var in_flight: usize = 0; // items pushed to workers, results not yet processed
+
+    while (qi < queue.items.len or in_flight > 0) {
+        // --- Drain available queue items (fast paths inline) ---
+        while (qi < queue.items.len) {
+            const req = queue.items[qi];
+            qi += 1;
+
+            const dedupe_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ req.name, req.range });
+            defer allocator.free(dedupe_key);
+            if (visited.contains(dedupe_key)) continue;
+            try visited.put(allocator, try allocator.dupe(u8, dedupe_key), {});
+
+            const effective_range = overrides.get(req.name) orelse req.range;
+
+            // 1. Workspace hit.
+            if (ws_res.resolve(req.name, effective_range)) |ws_pkg| {
+                const rp = ResolvedPackage{
+                    .name = req.name,
+                    .version = try allocator.dupe(u8, ws_pkg.manifest.version orelse "0.0.0"),
+                    .tarball_url = "",
+                    .integrity = "",
+                    .registry = "",
+                    .is_workspace = true,
+                    .is_git = false,
+                    .dependencies = .{},
+                    .optional_dependencies = .{},
+                };
+                const key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ rp.name, rp.version });
+                if (!resolved_set.contains(key)) {
+                    try resolved_set.put(allocator, key, rp);
+                } else {
+                    allocator.free(key);
+                    allocator.free(rp.version);
+                }
+                writer.emit(.{ .resolve_progress = .{
+                    .resolved = @intCast(resolved_set.count()),
+                    .total = @intCast(queue.items.len),
+                    .name = req.name,
+                } });
+                continue;
+            }
+
+            // 2. Lockfile hit.
+            if (!opts.force) {
+                const lock_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ req.name, effective_range });
+                defer allocator.free(lock_key);
+                if (existing_lock.get(lock_key)) |entry| {
+                    if (semver.satisfies(allocator, entry.version, effective_range)) {
+                        const map_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ req.name, entry.version });
+                        if (resolved_set.contains(map_key)) {
+                            allocator.free(map_key);
+                        } else {
+                            const rp = try resolvedFromLockEntry(allocator, req.name, entry, config);
+                            try resolved_set.put(allocator, map_key, rp);
+                        }
+                        try enqueueMapDeps(allocator, &queue, &entry.dependencies, false);
+                        try enqueueMapDeps(allocator, &queue, &entry.optional_dependencies, opts.ignore_optional);
+                        writer.emit(.{ .resolve_progress = .{
+                            .resolved = @intCast(resolved_set.count()),
+                            .total = @intCast(queue.items.len),
+                            .name = req.name,
+                        } });
+                        continue;
                     }
-                    // Always enqueue transitive deps (even on duplicate).
-                    try enqueueMapDeps(allocator, &queue, &entry.dependencies, false);
-                    try enqueueMapDeps(allocator, &queue, &entry.optional_dependencies, opts.ignore_optional);
-                    writer.emit(.{ .resolve_progress = .{
-                        .resolved = @intCast(resolved_set.count()),
-                        .total = @intCast(queue.items.len),
-                        .name = req.name,
-                    } });
-                    continue;
                 }
             }
-        }
 
-        // 3. Git dependency.
-        if (isGitDep(effective_range)) {
-            if (opts.frozen_lockfile) return error.FrozenLockfileChanged;
-            const rp = try resolveGitDep(allocator, req.name, effective_range, config);
-            const key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ rp.name, rp.version });
-            if (resolved_set.contains(key)) {
-                allocator.free(key);
-                freeResolvedPackage(allocator, rp);
-            } else {
-                try resolved_set.put(allocator, key, rp);
+            // 3. Git dependency (serial — uncommon).
+            if (isGitDep(effective_range)) {
+                if (opts.frozen_lockfile) return error.FrozenLockfileChanged;
+                const rp = try resolveGitDep(allocator, req.name, effective_range, config);
+                const key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ rp.name, rp.version });
+                if (resolved_set.contains(key)) {
+                    allocator.free(key);
+                    freeResolvedPackage(allocator, rp);
+                } else {
+                    try resolved_set.put(allocator, key, rp);
+                }
+                writer.emit(.{ .resolve_progress = .{
+                    .resolved = @intCast(resolved_set.count()),
+                    .total = @intCast(queue.items.len),
+                    .name = req.name,
+                } });
+                continue;
             }
-            writer.emit(.{ .resolve_progress = .{
-                .resolved = @intCast(resolved_set.count()),
-                .total = @intCast(queue.items.len),
+
+            // 4. Registry — hand off to the worker pool.
+            if (opts.frozen_lockfile) return error.FrozenLockfileChanged;
+            ch.fetch_mutex.lock();
+            try ch.fetch_items.append(allocator, FetchJob{
                 .name = req.name,
-            } });
-            continue;
+                .eff_range = effective_range,
+                .optional = req.optional,
+            });
+            ch.fetch_mutex.unlock();
+            ch.fetch_cond.signal();
+            in_flight += 1;
         }
 
-        // 4. Registry fetch.
-        if (opts.frozen_lockfile) return error.FrozenLockfileChanged;
+        if (in_flight == 0) break; // nothing left anywhere
 
-        const meta = client.fetchMetadata(req.name) catch |err| {
-            if (req.optional) continue; // optional dep - skip on failure
-            // Print the package name so the user knows which package failed.
-            // The URL and curl error have already been printed by the client.
+        // --- Wait for the next result from a worker ---
+        var result: FetchResult = blk: {
+            ch.result_mutex.lock();
+            defer ch.result_mutex.unlock();
+            while (ch.result_items.items.len == 0) {
+                ch.result_cond.wait(&ch.result_mutex);
+            }
+            break :blk ch.result_items.swapRemove(0);
+        };
+        in_flight -= 1;
+
+        // result.meta is freed at every exit path of this block.
+        defer if (result.meta) |*m| m.deinit(allocator);
+
+        if (result.err) |err| {
+            if (result.job.optional) continue;
             std.io.getStdErr().writer().print(
                 "  warn  failed to resolve package: {s}\n",
-                .{req.name},
+                .{result.job.name},
             ) catch {};
             return err;
-        };
-        defer {
-            var m = meta;
-            m.deinit(allocator);
         }
 
-        // Collect all version strings for maxSatisfying.
-        var version_strs = try std.ArrayList([]const u8).initCapacity(allocator, meta.versions.count());
+        const meta = result.meta orelse continue;
+
+        var version_strs = try std.ArrayList([]const u8).initCapacity(
+            allocator,
+            meta.versions.count(),
+        );
+        defer version_strs.deinit();
         var v_it = meta.versions.keyIterator();
         while (v_it.next()) |k| try version_strs.append(k.*);
-        defer version_strs.deinit();
 
         const latest = meta.dist_tags.get("latest");
-        const best_ver = semver.maxSatisfying(allocator, version_strs.items, effective_range, latest) orelse {
-            if (req.optional) continue;
+        const best_ver = semver.maxSatisfying(
+            allocator,
+            version_strs.items,
+            result.job.eff_range,
+            latest,
+        ) orelse {
+            if (result.job.optional) continue;
             std.io.getStdErr().writer().print(
                 "  warn  no version of {s} satisfies range \"{s}\"\n",
-                .{ req.name, effective_range },
+                .{ result.job.name, result.job.eff_range },
             ) catch {};
             return error.NoMatchingVersion;
         };
 
         const ver_info = meta.versions.get(best_ver).?;
 
-        // Allocate the map key before building rp; skip entirely if already
-        // resolved (multiple dep ranges resolving to the same name@version).
-        const key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ req.name, ver_info.version });
+        const key = try std.fmt.allocPrint(
+            allocator,
+            "{s}@{s}",
+            .{ result.job.name, ver_info.version },
+        );
         if (resolved_set.contains(key)) {
             allocator.free(key);
             try enqueueMapDeps(allocator, &queue, &ver_info.dependencies, false);
@@ -330,21 +419,20 @@ pub fn resolve(
         }
 
         const rp = ResolvedPackage{
-            .name = try allocator.dupe(u8, req.name),
+            .name = try allocator.dupe(u8, result.job.name),
             .version = try allocator.dupe(u8, ver_info.version),
             .tarball_url = try allocator.dupe(u8, ver_info.tarball),
             .integrity = try allocator.dupe(u8, ver_info.integrity),
-            .registry = try allocator.dupe(u8, config.getRegistry(extractScope(req.name))),
+            .registry = try allocator.dupe(u8, config.getRegistry(extractScope(result.job.name))),
             .is_workspace = false,
             .is_git = false,
             .dependencies = .{},
             .optional_dependencies = .{},
         };
-
-        // key is now consumed by resolved_set (no free here).
         try resolved_set.put(allocator, key, rp);
 
-        // Enqueue transitive deps.
+        // Transitive deps go into `queue`; the main loop's `qi` will reach
+        // them and immediately push them to workers (true FIFO pipeline).
         try enqueueMapDeps(allocator, &queue, &ver_info.dependencies, false);
         try enqueueMapDeps(allocator, &queue, &ver_info.optional_dependencies, opts.ignore_optional);
 
@@ -361,10 +449,8 @@ pub fn resolve(
         allocator.free(req.range);
     }
 
-    // WorkspaceResolver holds pointers into workspaces - free it before workspaces.
     ws_res.deinit();
 
-    // Free workspace manifests and paths now that the BFS loop is done.
     for (workspaces) |*ws| {
         allocator.free(ws.path);
         allocator.free(ws.rel_path);
@@ -372,7 +458,6 @@ pub fn resolve(
     }
     allocator.free(workspaces);
 
-    // --- Build the new lockfile ---
     const new_lock = try buildLockfile(allocator, &resolved_set);
 
     return ResolutionResult{
@@ -570,6 +655,81 @@ fn extractScope(name: []const u8) ?[]const u8 {
     if (name.len == 0 or name[0] != '@') return null;
     const slash = std.mem.indexOfScalar(u8, name, '/') orelse return null;
     return name[0..slash];
+}
+
+// ============================================================================
+// FIFO worker-pool infrastructure
+// ============================================================================
+
+/// A registry metadata fetch job (main → worker).
+const FetchJob = struct {
+    /// Points into the BFS queue; valid for the lifetime of resolve().
+    name: []const u8,
+    /// Effective version range after `resolutions` overrides.
+    eff_range: []const u8,
+    optional: bool,
+};
+
+/// Result of a metadata fetch (worker → main).
+const FetchResult = struct {
+    job: FetchJob,
+    /// Allocated on ts_alloc; caller must deinit.
+    meta: ?reg_types.PackageMetadata,
+    err: ?anyerror,
+};
+
+/// Shared channel state between the main thread and the worker pool.
+const FifoChannels = struct {
+    ts_alloc: std.mem.Allocator,
+    config: *const Config,
+
+    // Fetch queue: main pushes FetchJobs; workers pop and fetch.
+    fetch_mutex: std.Thread.Mutex,
+    fetch_cond: std.Thread.Condition,
+    fetch_items: std.ArrayListUnmanaged(FetchJob),
+
+    // Result queue: workers push FetchResults; main pops and processes.
+    result_mutex: std.Thread.Mutex,
+    result_cond: std.Thread.Condition,
+    result_items: std.ArrayListUnmanaged(FetchResult),
+
+    /// Set to true when workers should drain and exit.
+    shutdown: std.atomic.Value(bool),
+};
+
+/// Persistent worker thread: pops FetchJobs, fetches metadata, pushes results.
+fn fifoWorker(ch: *FifoChannels) void {
+    var client = registry_client.RegistryClient.init(ch.ts_alloc, ch.config);
+    defer client.deinit();
+
+    while (true) {
+        // Wait for a job (or shutdown signal).
+        const job: FetchJob = blk: {
+            ch.fetch_mutex.lock();
+            defer ch.fetch_mutex.unlock();
+            while (ch.fetch_items.items.len == 0) {
+                if (ch.shutdown.load(.acquire)) return;
+                ch.fetch_cond.wait(&ch.fetch_mutex);
+            }
+            // orderedRemove(0) preserves FIFO ordering.
+            break :blk ch.fetch_items.orderedRemove(0);
+        };
+
+        var result = FetchResult{ .job = job, .meta = null, .err = null };
+        if (client.fetchMetadata(job.name)) |meta| {
+            result.meta = meta;
+        } else |err| {
+            result.err = err;
+        }
+
+        ch.result_mutex.lock();
+        ch.result_items.append(ch.ts_alloc, result) catch {
+            ch.result_mutex.unlock();
+            return;
+        };
+        ch.result_mutex.unlock();
+        ch.result_cond.signal();
+    }
 }
 
 fn buildLockfile(

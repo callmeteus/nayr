@@ -36,7 +36,7 @@ pub const InstallOptions = struct {
     flat: bool = false,
     check_files: bool = false,
     ignore_scripts: bool = false,
-    concurrency: u32 = 16,
+    concurrency: u32 = 32,
 };
 
 // ============================================================================
@@ -101,6 +101,7 @@ pub fn run(
         .production = opts.production,
         .ignore_optional = opts.ignore_optional,
         .force = opts.force,
+        .concurrency = opts.concurrency,
     };
     var resolution = try resolver_mod.resolve(allocator, cwd, config, res_opts, writer);
     defer resolution.deinit();
