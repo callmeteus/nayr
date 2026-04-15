@@ -163,17 +163,20 @@ pub fn run(
     defer ws_paths.deinit(allocator);
     for (workspaces) |*ws| {
         const name = ws.manifest.name orelse continue;
+        // Skip workspace entries whose path is inside node_modules/ - these are
+        // a Yarn Classic quirk (e.g. workspaces: ["node_modules/@scope/pkg"]) that
+        // nayr resolves through the link registry instead.  Using the node_modules
+        // path directly would create a self-referential symlink.
+        if (std.mem.indexOf(u8, ws.rel_path, "node_modules") != null) continue;
         try ws_paths.put(allocator, name, ws.path);
     }
     {
         var pkg_it = resolution.packages.valueIterator();
         while (pkg_it.next()) |pkg| {
             if (pkg.is_linked and pkg.tarball_url.len > 0) {
-                // Only add if not already covered by the workspace discovery
-                // (workspace takes precedence for in-monorepo packages).
-                if (!ws_paths.contains(pkg.name)) {
-                    try ws_paths.put(allocator, pkg.name, pkg.tarball_url);
-                }
+                // Link-registry packages override workspace-discovery paths so
+                // that a local dev checkout always wins over a node_modules entry.
+                try ws_paths.put(allocator, pkg.name, pkg.tarball_url);
             }
         }
     }

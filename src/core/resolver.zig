@@ -199,6 +199,20 @@ pub fn resolve(
         visited.deinit(allocator);
     }
 
+    // Maps "name@range" → "name@version".  Built as packages are resolved so
+    // that buildLockfile can write the original request ranges as lockfile
+    // patterns instead of the resolved version strings.  Lockfile lookups use
+    // the range as key, so without this every install would be a full cache miss.
+    var range_to_key = std.StringHashMapUnmanaged([]const u8){};
+    defer {
+        var rtk_it = range_to_key.iterator();
+        while (rtk_it.next()) |kv| {
+            allocator.free(kv.key_ptr.*);
+            allocator.free(kv.value_ptr.*);
+        }
+        range_to_key.deinit(allocator);
+    }
+
     try enqueueDeps(allocator, &queue, &root_manifest, opts);
     for (workspaces) |*ws| {
         try enqueueDeps(allocator, &queue, &ws.manifest, opts);
@@ -376,6 +390,19 @@ pub fn resolve(
                 if (existing_lock.get(lock_key)) |entry| {
                     if (semver.satisfies(allocator, entry.version, effective_range)) {
                         const map_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ req.name, entry.version });
+
+                        // Record range → resolved key for lockfile pattern generation.
+                        {
+                            const rtk_pat = try allocator.dupe(u8, lock_key);
+                            const rtk_val = try allocator.dupe(u8, map_key);
+                            const gop = try range_to_key.getOrPut(allocator, rtk_pat);
+                            if (gop.found_existing) {
+                                allocator.free(rtk_pat); // old key kept in map
+                                allocator.free(gop.value_ptr.*);
+                            }
+                            gop.value_ptr.* = rtk_val;
+                        }
+
                         if (resolved_set.contains(map_key)) {
                             allocator.free(map_key);
                         } else {
@@ -399,6 +426,19 @@ pub fn resolve(
                 if (opts.frozen_lockfile) return error.FrozenLockfileChanged;
                 const rp = try resolveGitDep(allocator, req.name, effective_range, config);
                 const key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ rp.name, rp.version });
+
+                // Record range → resolved key.
+                {
+                    const rtk_pat = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ req.name, effective_range });
+                    const rtk_val = try allocator.dupe(u8, key);
+                    const gop = try range_to_key.getOrPut(allocator, rtk_pat);
+                    if (gop.found_existing) {
+                        allocator.free(rtk_pat);
+                        allocator.free(gop.value_ptr.*);
+                    }
+                    gop.value_ptr.* = rtk_val;
+                }
+
                 if (resolved_set.contains(key)) {
                     allocator.free(key);
                     freeResolvedPackage(allocator, rp);
@@ -483,6 +523,19 @@ pub fn resolve(
             "{s}@{s}",
             .{ result.job.name, ver_info.version },
         );
+
+        // Record range → resolved key for lockfile pattern generation.
+        {
+            const rtk_pat = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ result.job.name, result.job.eff_range });
+            const rtk_val = try allocator.dupe(u8, key);
+            const gop = try range_to_key.getOrPut(allocator, rtk_pat);
+            if (gop.found_existing) {
+                allocator.free(rtk_pat);
+                allocator.free(gop.value_ptr.*);
+            }
+            gop.value_ptr.* = rtk_val;
+        }
+
         if (resolved_set.contains(key)) {
             allocator.free(key);
             try enqueueMapDeps(allocator, &queue, &ver_info.dependencies, false);
@@ -530,7 +583,7 @@ pub fn resolve(
     }
     allocator.free(workspaces);
 
-    const new_lock = try buildLockfile(allocator, &resolved_set);
+    const new_lock = try buildLockfile(allocator, &resolved_set, &range_to_key);
 
     return ResolutionResult{
         .packages = resolved_set,
@@ -895,19 +948,55 @@ fn fifoWorker(ch: *FifoChannels) void {
 fn buildLockfile(
     allocator: std.mem.Allocator,
     packages: *const std.StringHashMapUnmanaged(ResolvedPackage),
+    range_to_key: *const std.StringHashMapUnmanaged([]const u8),
 ) !Lockfile {
+    // Group range patterns (e.g. "lodash@^4.17.0") by their resolved key
+    // (e.g. "lodash@4.17.21") so that each lockfile entry stores all the
+    // request ranges that map to that resolved version.  This makes the
+    // resolver's lockfile lookup (which uses "name@range" as the key) work
+    // on subsequent installs, avoiding full registry re-fetches.
+    var key_to_patterns = std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)){};
+    defer {
+        var ktp_it = key_to_patterns.iterator();
+        while (ktp_it.next()) |kv| {
+            for (kv.value_ptr.items) |s| allocator.free(s);
+            kv.value_ptr.deinit(allocator);
+        }
+        key_to_patterns.deinit(allocator);
+    }
+    {
+        var rtk_it = range_to_key.iterator();
+        while (rtk_it.next()) |kv| {
+            const gop = try key_to_patterns.getOrPut(allocator, kv.value_ptr.*);
+            if (!gop.found_existing) gop.value_ptr.* = .{};
+            try gop.value_ptr.append(allocator, try allocator.dupe(u8, kv.key_ptr.*));
+        }
+    }
+
     var entries = std.ArrayList(lockfile_types.LockfileEntry).init(allocator);
     var pattern_map = std.StringHashMapUnmanaged(usize){};
 
     var it = packages.iterator();
     while (it.next()) |kv| {
         const pkg = kv.value_ptr;
-        const pattern = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ pkg.name, pkg.version });
+        const pkg_key = kv.key_ptr.*; // "name@version"
 
-        // Heap-allocate the patterns array so that the slice pointer survives
-        // beyond this loop iteration (stack-allocated &.{pattern} would be UB).
-        const patterns = try allocator.alloc([]const u8, 1);
-        patterns[0] = pattern;
+        // Build patterns list: start with the canonical "name@version" pattern,
+        // then append all collected request-range patterns.
+        var patterns_list = std.ArrayList([]const u8).init(allocator);
+        defer patterns_list.deinit();
+        try patterns_list.append(try std.fmt.allocPrint(allocator, "{s}@{s}", .{ pkg.name, pkg.version }));
+
+        if (key_to_patterns.get(pkg_key)) |range_pats| {
+            for (range_pats.items) |pat| {
+                const already = for (patterns_list.items) |p| {
+                    if (std.mem.eql(u8, p, pat)) break true;
+                } else false;
+                if (!already) try patterns_list.append(try allocator.dupe(u8, pat));
+            }
+        }
+
+        const patterns = try patterns_list.toOwnedSlice();
 
         var entry = lockfile_types.LockfileEntry{
             .patterns = patterns,
@@ -937,7 +1026,7 @@ fn buildLockfile(
         }
 
         const idx = entries.items.len;
-        try pattern_map.put(allocator, pattern, idx);
+        for (patterns) |pat| try pattern_map.put(allocator, pat, idx);
         try entries.append(entry);
     }
 

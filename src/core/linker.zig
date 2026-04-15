@@ -222,7 +222,9 @@ fn removeExtraneous(
                     const sub_path = try std.fs.path.join(allocator, &.{ scope_path, sub.name });
                     defer allocator.free(sub_path);
                     std.fs.deleteTreeAbsolute(sub_path) catch {};
-                    writer.emit(.{ .info = try std.fmt.allocPrint(allocator, "removed extraneous: {s}", .{full_name}) });
+                    const msg = try std.fmt.allocPrint(allocator, "removed extraneous: {s}", .{full_name});
+                    defer allocator.free(msg);
+                    writer.emit(.{ .info = msg });
                 }
             }
             continue;
@@ -232,7 +234,9 @@ fn removeExtraneous(
             const pkg_path = try std.fs.path.join(allocator, &.{ node_modules, entry.name });
             defer allocator.free(pkg_path);
             std.fs.deleteTreeAbsolute(pkg_path) catch {};
-            writer.emit(.{ .info = try std.fmt.allocPrint(allocator, "removed extraneous: {s}", .{pkg_name}) });
+            const msg = try std.fmt.allocPrint(allocator, "removed extraneous: {s}", .{pkg_name});
+            defer allocator.free(msg);
+            writer.emit(.{ .info = msg });
         }
     }
 }
