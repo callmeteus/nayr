@@ -24,6 +24,8 @@
     "test:compare": "sh tests/run.sh integration",
     "bench": "sh tests/run.sh bench --no-yarn",
     "bench:compare": "sh tests/run.sh bench",
-    "ci": "sh tests/run.sh ci"
+    "ci": "sh tests/run.sh ci",
+    "publish": "npm publish --tag latest",
+    "publish:beta": "npm publish --tag beta"
   }
 }
