@@ -86,8 +86,21 @@ pub fn run(
     else
         "dependencies";
 
+    // All strings inserted into the JSON tree must use the parsed arena so
+    // that parsed.deinit() frees them correctly (it only frees its own arena).
+    const ja = parsed.arena.allocator();
+
+    // Arena for short-lived per-iteration strings (writer messages).
+    var loop_arena = std.heap.ArenaAllocator.init(allocator);
+    defer loop_arena.deinit();
+    const la = loop_arena.allocator();
+
     for (packages.items) |pkg_spec| {
+        _ = loop_arena.reset(.retain_capacity);
+
         // Parse `name@version` or `name`.
+        // For git/URL specs (e.g. git+https://...) there is no `@` separator,
+        // so the whole spec is treated as the name and version defaults to "latest".
         const at = std.mem.lastIndexOfScalar(u8, pkg_spec, '@') orelse pkg_spec.len;
         const pkg_name = if (at > 0 and pkg_spec[0] != '@') pkg_spec[0..at] else blk: {
             // Scoped package: `@scope/name@version`
@@ -104,24 +117,24 @@ pub fn run(
         else
             config.save_prefix;
 
-        const range = if (std.mem.eql(u8, requested_ver, "latest"))
-            try std.fmt.allocPrint(allocator, "{s}*", .{prefix})
+        // range goes into the JSON tree — use json arena so parsed.deinit() frees it.
+        const range: []const u8 = if (std.mem.eql(u8, requested_ver, "latest"))
+            try std.fmt.allocPrint(ja, "{s}*", .{prefix})
         else
-            try std.fmt.allocPrint(allocator, "{s}{s}", .{ prefix, requested_ver });
-        defer allocator.free(range);
+            try std.fmt.allocPrint(ja, "{s}{s}", .{ prefix, requested_ver });
 
         // Add to the parsed JSON object.
         if (parsed.value.object.getPtr(dep_key)) |deps_val| {
             if (deps_val.* == .object) {
-                try deps_val.object.put(try allocator.dupe(u8, pkg_name), .{ .string = range });
+                try deps_val.object.put(try ja.dupe(u8, pkg_name), .{ .string = range });
             }
         } else {
-            var new_deps = std.json.ObjectMap.init(allocator);
-            try new_deps.put(try allocator.dupe(u8, pkg_name), .{ .string = range });
-            try parsed.value.object.put(dep_key, .{ .object = new_deps });
+            var new_deps = std.json.ObjectMap.init(ja);
+            try new_deps.put(try ja.dupe(u8, pkg_name), .{ .string = range });
+            try parsed.value.object.put(try ja.dupe(u8, dep_key), .{ .object = new_deps });
         }
 
-        writer.emit(.{ .info = try std.fmt.allocPrint(allocator, "added {s}@{s} to {s}", .{ pkg_name, range, dep_key }) });
+        writer.emit(.{ .info = try std.fmt.allocPrint(la, "added {s}@{s} to {s}", .{ pkg_name, range, dep_key }) });
     }
 
     // Write updated package.json atomically.
