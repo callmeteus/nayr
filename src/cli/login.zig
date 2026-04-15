@@ -14,6 +14,7 @@
 //!   nayr logout --all
 
 const std = @import("std");
+const builtin = @import("builtin");
 const output = @import("../util/output.zig");
 const config_types = @import("../config/types.zig");
 const registry_auth = @import("../registry/auth.zig");
@@ -196,13 +197,37 @@ fn promptPassword(allocator: std.mem.Allocator, prompt: []const u8) ![]const u8 
 }
 
 fn disableEcho() void {
+    if (builtin.os.tag == .windows) {
+        setConsoleEcho(false);
+        return;
+    }
     var termios = std.posix.tcgetattr(std.io.getStdIn().handle) catch return;
     termios.lflag.ECHO = false;
     std.posix.tcsetattr(std.io.getStdIn().handle, .NOW, termios) catch {};
 }
 
 fn enableEcho() void {
+    if (builtin.os.tag == .windows) {
+        setConsoleEcho(true);
+        return;
+    }
     var termios = std.posix.tcgetattr(std.io.getStdIn().handle) catch return;
     termios.lflag.ECHO = true;
     std.posix.tcsetattr(std.io.getStdIn().handle, .NOW, termios) catch {};
+}
+
+/// Toggles echo on the Windows console via `SetConsoleMode`.
+fn setConsoleEcho(enabled: bool) void {
+    if (builtin.os.tag != .windows) return;
+    const windows = std.os.windows;
+    const handle = std.io.getStdIn().handle;
+    var mode: windows.DWORD = 0;
+    if (windows.kernel32.GetConsoleMode(handle, &mode) == 0) return;
+    const ENABLE_ECHO_INPUT: windows.DWORD = 0x0004;
+    if (enabled) {
+        mode |= ENABLE_ECHO_INPUT;
+    } else {
+        mode &= ~ENABLE_ECHO_INPUT;
+    }
+    _ = windows.kernel32.SetConsoleMode(handle, mode);
 }

@@ -13,8 +13,9 @@
     "zig-out/bin"
   ],
   "scripts": {
-    "build": "zig build -Doptimize=ReleaseFast",
+    "build": "zig build -Doptimize=ReleaseFast && zig build cross",
     "build:debug": "zig build",
+    "build:cross": "zig build cross",
     "link:dev": "sh bin/link-dev",
     "link:dev:release": "sh bin/link-dev --release",
     "test": "sh tests/run.sh all --no-yarn",

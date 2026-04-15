@@ -196,6 +196,12 @@ pub fn symlinkOrJunction(target: []const u8, link_path: []const u8) !void {
 /// - `src`: Source file path.
 /// - `dest`: Destination path for the hard link or copy.
 pub fn hardlinkOrCopy(src: []const u8, dest: []const u8) !void {
+    if (builtin.os.tag == .windows) {
+        // Hard links on Windows require NTFS and same-volume constraints;
+        // skip straight to a plain copy for simplicity and reliability.
+        try copyFile(src, dest);
+        return;
+    }
     std.posix.link(src, dest) catch {
         // Hard link failed (e.g., cross-device) - copy the file instead.
         try copyFile(src, dest);
