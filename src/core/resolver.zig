@@ -909,12 +909,33 @@ fn buildLockfile(
         const patterns = try allocator.alloc([]const u8, 1);
         patterns[0] = pattern;
 
-        const entry = lockfile_types.LockfileEntry{
+        var entry = lockfile_types.LockfileEntry{
             .patterns = patterns,
             .version = try allocator.dupe(u8, pkg.version),
             .resolved = try allocator.dupe(u8, pkg.tarball_url),
             .integrity = try allocator.dupe(u8, pkg.integrity),
         };
+
+        // Copy runtime and optional dependency maps so subsequent installs
+        // can enqueue transitive deps from the lockfile without re-fetching
+        // metadata from the registry.
+        var dep_it = pkg.dependencies.iterator();
+        while (dep_it.next()) |dep_kv| {
+            try entry.dependencies.put(
+                allocator,
+                try allocator.dupe(u8, dep_kv.key_ptr.*),
+                try allocator.dupe(u8, dep_kv.value_ptr.*),
+            );
+        }
+        var opt_it = pkg.optional_dependencies.iterator();
+        while (opt_it.next()) |opt_kv| {
+            try entry.optional_dependencies.put(
+                allocator,
+                try allocator.dupe(u8, opt_kv.key_ptr.*),
+                try allocator.dupe(u8, opt_kv.value_ptr.*),
+            );
+        }
+
         const idx = entries.items.len;
         try pattern_map.put(allocator, pattern, idx);
         try entries.append(entry);
