@@ -9,7 +9,7 @@
     "nayr": "./bin/nayr"
   },
   "files": [
-    "bin",
+    "bin/nayr",
     "zig-out/bin"
   ],
   "scripts": {
