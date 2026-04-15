@@ -161,8 +161,11 @@ fn parseComparatorSet(allocator: std.mem.Allocator, s: []const u8) ![]const Comp
 
     // Normalize spaces between operators and versions before tokenising so
     // that ">= 1.2.3 < 3" is treated the same as ">=1.2.3 <3".
+    // NOTE: `normalized` is intentionally NOT freed here. Version.pre / build
+    // fields in the resulting Comparators are slices into this buffer, so it
+    // must live for as long as the Range. Callers use an arena allocator; the
+    // arena deinit will reclaim this allocation together with the Range itself.
     const normalized = try normalizeComparatorSet(allocator, s);
-    defer allocator.free(normalized);
 
     // Split on whitespace; each token is one comparator.
     var tok_it = std.mem.tokenizeAny(u8, normalized, " \t");

@@ -129,8 +129,6 @@ pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !void {
         try link_cmd.runLink(allocator, cmd_args, opts.cwd, &config, writer);
     } else if (std.mem.eql(u8, cmd, "unlink")) {
         try link_cmd.runUnlink(allocator, cmd_args, opts.cwd, &config, writer);
-    } else if (std.mem.eql(u8, cmd, "mklink")) {
-        try link_cmd.runMklink(allocator, cmd_args, opts.cwd, &config, writer);
     } else if (std.mem.eql(u8, cmd, "autolink")) {
         try link_cmd.runAutolink(allocator, cmd_args, opts.cwd, &config, writer);
     } else if (std.mem.eql(u8, cmd, "why")) {
@@ -368,9 +366,9 @@ fn printHelp() void {
         .{ .name = "remove <pkg...>", .desc = "Remove package(s)" },
         .{ .name = "upgrade [pkg...]",.desc = "Upgrade package(s)" },
         .{ .name = "run <script>",    .desc = "Run a package.json script" },
-        .{ .name = "link [name]",     .desc = "Register or use a local package link" },
-        .{ .name = "unlink [name]",   .desc = "Remove a local package link" },
-        .{ .name = "mklink [glob]",   .desc = "Register multiple packages via glob" },
+        .{ .name = "link",            .desc = "Register current package globally" },
+        .{ .name = "link <name>",     .desc = "Use a registered global package locally" },
+        .{ .name = "unlink [name]",   .desc = "Remove a global registration or local link" },
         .{ .name = "autolink",        .desc = "Auto-link all registered packages" },
         .{ .name = "audit",           .desc = "Run security audit" },
         .{ .name = "why <pkg>",       .desc = "Explain why a package is installed" },

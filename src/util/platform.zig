@@ -72,6 +72,60 @@ pub fn getLinksDir(allocator: std.mem.Allocator) ![]const u8 {
     return std.fs.path.join(allocator, &.{ config, "links" });
 }
 
+/// Returns Yarn Classic's global link registry directory, if it can be found.
+///
+/// Yarn 1.x stores links at:
+///   Linux/macOS: `$XDG_CONFIG_HOME/yarn/link` or `~/.config/yarn/link`
+///   Windows:     `%LOCALAPPDATA%\Yarn\Data\link`
+///
+/// Returns `error.NotFound` when the directory does not exist.
+pub fn getYarnLinksDir(allocator: std.mem.Allocator) ![]const u8 {
+    if (builtin.os.tag == .windows) {
+        const local = std.process.getEnvVarOwned(allocator, "LOCALAPPDATA") catch
+            return error.NotFound;
+        defer allocator.free(local);
+        const path = try std.fs.path.join(allocator, &.{ local, "Yarn", "Data", "link" });
+        std.fs.accessAbsolute(path, .{}) catch {
+            allocator.free(path);
+            return error.NotFound;
+        };
+        return path;
+    }
+
+    // XDG_CONFIG_HOME / ~/.config
+    const config_base: []const u8 = blk: {
+        if (std.process.getEnvVarOwned(allocator, "XDG_CONFIG_HOME")) |xdg| {
+            break :blk xdg;
+        } else |_| {}
+        const home = getHomeDir(allocator) catch return error.NotFound;
+        defer allocator.free(home);
+        break :blk try std.fs.path.join(allocator, &.{ home, ".config" });
+    };
+    defer allocator.free(config_base);
+
+    const path = try std.fs.path.join(allocator, &.{ config_base, "yarn", "link" });
+    std.fs.accessAbsolute(path, .{}) catch {
+        allocator.free(path);
+        return error.NotFound;
+    };
+    return path;
+}
+
+/// Reads a symlink and resolves its target to an absolute path.
+///
+/// Yarn stores relative targets; this function returns the resolved absolute
+/// path. Caller owns the returned slice.
+pub fn readSymlinkAbsolute(allocator: std.mem.Allocator, link_path: []const u8) ![]const u8 {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const raw = try std.fs.readLinkAbsolute(link_path, &buf);
+    if (std.fs.path.isAbsolute(raw)) {
+        return allocator.dupe(u8, raw);
+    }
+    // Resolve relative target against the symlink's parent directory.
+    const parent = std.fs.path.dirname(link_path) orelse ".";
+    return std.fs.path.resolve(allocator, &.{ parent, raw });
+}
+
 /// Returns the user's home directory.
 pub fn getHomeDir(allocator: std.mem.Allocator) ![]const u8 {
     if (builtin.os.tag == .windows) {

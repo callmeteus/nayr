@@ -1,12 +1,12 @@
-//! `nayr link`, `nayr unlink`, `nayr mklink`, `nayr autolink` Commands
+//! `nayr link`, `nayr unlink`, `nayr autolink` Commands
 //!
 //! Manages the local package link registry at `~/.nayr/links/`.
 //!
 //! Commands:
-//!   nayr link              - register the current package
+//!   nayr link              - register the current package globally
 //!   nayr link <name>       - create a node_modules symlink to a registered pkg
-//!   nayr unlink [name]     - remove a registration or node_modules link
-//!   nayr mklink [glob]     - register multiple packages via glob
+//!   nayr unlink            - unregister the current package
+//!   nayr unlink <name>     - remove a specific registration
 //!   nayr autolink          - auto-link all registered packages present in pkg.json
 //!   nayr link --list       - list all registered links
 //!   nayr link --clean      - remove broken links
@@ -88,51 +88,6 @@ pub fn runUnlink(
 }
 
 // ============================================================================
-// nayr mklink
-// ============================================================================
-
-pub fn runMklink(
-    allocator: std.mem.Allocator,
-    args: []const []const u8,
-    cwd: []const u8,
-    _: *const Config,
-    writer: output.Writer,
-) !void {
-    const links_dir = try platform.getLinksDir(allocator);
-    defer allocator.free(links_dir);
-    try fs_util.mkdirAllRecursive(allocator, links_dir);
-
-    const glob = if (args.len > 0) args[0] else "packages/*";
-    const matches = try fs_util.globExpand(allocator, cwd, glob);
-    defer allocator.free(matches);
-
-    for (matches) |match| {
-        const pkg_json = try std.fs.path.join(allocator, &.{ match, "package.json" });
-        defer allocator.free(pkg_json);
-        std.fs.accessAbsolute(pkg_json, .{}) catch continue;
-
-        const manifest = json_util.parseFile(allocator, pkg_json) catch continue;
-        const name = manifest.name orelse continue;
-
-        const link_path = try std.fs.path.join(allocator, &.{ links_dir, name });
-        defer allocator.free(link_path);
-
-        // Remove and recreate the symlink.
-        std.fs.deleteFileAbsolute(link_path) catch {};
-        std.fs.deleteTreeAbsolute(link_path) catch {};
-        platform.symlinkOrJunction(match, link_path) catch |err| {
-            writer.emit(.{ .warning = try std.fmt.allocPrint(
-                allocator,
-                "mklink: could not link {s}: {s}",
-                .{ name, @errorName(err) },
-            ) });
-            continue;
-        };
-        writer.emit(.{ .info = try std.fmt.allocPrint(allocator, "registered link: {s} → {s}", .{ name, match }) });
-    }
-}
-
-// ============================================================================
 // nayr autolink
 // ============================================================================
 
@@ -153,7 +108,7 @@ pub fn runAutolink(
         return;
     };
 
-    // Link all deps that have a registered entry.
+    // Link all deps that have a registered entry (nayr or yarn fallback).
     var linked: u32 = 0;
     var dep_it = manifest.dependencies.iterator();
     while (dep_it.next()) |kv| {
@@ -161,7 +116,12 @@ pub fn runAutolink(
         const link_path = try std.fs.path.join(allocator, &.{ links_dir, name });
         defer allocator.free(link_path);
 
-        std.fs.accessAbsolute(link_path, .{}) catch continue;
+        const in_nayr = if (std.fs.accessAbsolute(link_path, .{})) |_| true else |_| false;
+        if (!in_nayr) {
+            // Check yarn as fallback; importFromYarn registers it if found.
+            const imported = try importFromYarn(allocator, name, links_dir, writer);
+            if (!imported) continue;
+        }
         try linkPackageIntoNodeModules(allocator, name, cwd, links_dir, writer);
         linked += 1;
     }
@@ -169,10 +129,9 @@ pub fn runAutolink(
     if (linked == 0) {
         writer.emit(.{ .info = "no registered links match dependencies" });
     } else {
-        writer.emit(.{ .done = .{
-            .elapsed_ms = 0,
-            .summary = try std.fmt.allocPrint(allocator, "{d} packages auto-linked", .{linked}),
-        } });
+        const summary = try std.fmt.allocPrint(allocator, "{d} packages auto-linked", .{linked});
+        defer allocator.free(summary);
+        writer.emit(.{ .done = .{ .elapsed_ms = 0, .summary = summary } });
     }
 }
 
@@ -212,7 +171,9 @@ fn registerCurrentPackage(
     std.fs.deleteTreeAbsolute(link_path) catch {};
     try platform.symlinkOrJunction(cwd, link_path);
 
-    writer.emit(.{ .info = try std.fmt.allocPrint(allocator, "registered: {s} → {s}", .{ name, cwd }) });
+    const msg = try std.fmt.allocPrint(allocator, "registered: {s} → {s}", .{ name, cwd });
+    defer allocator.free(msg);
+    writer.emit(.{ .info = msg });
 }
 
 fn linkPackageIntoNodeModules(
@@ -225,16 +186,26 @@ fn linkPackageIntoNodeModules(
     const link_src = try std.fs.path.join(allocator, &.{ links_dir, name });
     defer allocator.free(link_src);
 
-    std.fs.accessAbsolute(link_src, .{}) catch {
-        writer.emit(.{ .err = try std.fmt.allocPrint(allocator, "no link registered for: {s}", .{name}) });
-        return;
-    };
+    var imported_from_yarn = false;
+
+    if (std.fs.accessAbsolute(link_src, .{})) |_| {
+        // Found in nayr's registry — use it directly.
+    } else |_| {
+        // Not in nayr's registry — try to inherit from Yarn.
+        if (try importFromYarn(allocator, name, links_dir, writer)) {
+            imported_from_yarn = true;
+        } else {
+            const emsg = try std.fmt.allocPrint(allocator, "no link registered for: {s}", .{name});
+            defer allocator.free(emsg);
+            writer.emit(.{ .err = emsg });
+            return;
+        }
+    }
 
     const node_modules = try std.fs.path.join(allocator, &.{ cwd, "node_modules" });
     defer allocator.free(node_modules);
     try fs_util.mkdirAllRecursive(allocator, node_modules);
 
-    // For scoped packages, ensure the scope dir exists.
     if (name[0] == '@') {
         const slash = std.mem.indexOfScalar(u8, name, '/') orelse return error.InvalidPackageName;
         const scope_nm = try std.fs.path.join(allocator, &.{ node_modules, name[0..slash] });
@@ -248,7 +219,99 @@ fn linkPackageIntoNodeModules(
     std.fs.deleteTreeAbsolute(dest) catch {};
     try platform.symlinkOrJunction(link_src, dest);
 
-    writer.emit(.{ .info = try std.fmt.allocPrint(allocator, "linked: {s}", .{name}) });
+    const link_msg = if (imported_from_yarn)
+        try std.fmt.allocPrint(allocator, "linked: {s}  (inherited from yarn — registered in nayr)", .{name})
+    else
+        try std.fmt.allocPrint(allocator, "linked: {s}", .{name});
+    defer allocator.free(link_msg);
+    writer.emit(.{ .info = link_msg });
+}
+
+/// Attempts to find `name` in Yarn's link registry and register it in nayr's.
+///
+/// Returns `true` when the import succeeded; `false` when the package was not
+/// found in Yarn's registry (no error is emitted — caller decides messaging).
+fn importFromYarn(
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    nayr_links_dir: []const u8,
+    writer: output.Writer,
+) !bool {
+    const yarn_dir = platform.getYarnLinksDir(allocator) catch return false;
+    defer allocator.free(yarn_dir);
+
+    const yarn_link = try std.fs.path.join(allocator, &.{ yarn_dir, name });
+    defer allocator.free(yarn_link);
+
+    std.fs.accessAbsolute(yarn_link, .{}) catch return false;
+
+    const target = platform.readSymlinkAbsolute(allocator, yarn_link) catch return false;
+    defer allocator.free(target);
+
+    // Ensure scope dir exists inside nayr's links dir.
+    if (name[0] == '@') {
+        const slash = std.mem.indexOfScalar(u8, name, '/') orelse return false;
+        const scope_dir = try std.fs.path.join(allocator, &.{ nayr_links_dir, name[0..slash] });
+        defer allocator.free(scope_dir);
+        try fs_util.mkdirAllRecursive(allocator, scope_dir);
+    }
+
+    const nayr_link = try std.fs.path.join(allocator, &.{ nayr_links_dir, name });
+    defer allocator.free(nayr_link);
+
+    std.fs.deleteFileAbsolute(nayr_link) catch {};
+    std.fs.deleteTreeAbsolute(nayr_link) catch {};
+    platform.symlinkOrJunction(target, nayr_link) catch |err| {
+        const wmsg = std.fmt.allocPrint(allocator, "could not import yarn link for {s}: {s}", .{ name, @errorName(err) }) catch return false;
+        defer allocator.free(wmsg);
+        writer.emit(.{ .warning = wmsg });
+        return false;
+    };
+
+    return true;
+}
+
+/// Walks a links directory (depth-2 for scoped packages) and calls `cb` for
+/// every registered entry. `user_data` is passed through to the callback.
+///
+/// The callback signature is:
+///   fn(allocator, scoped_name: []const u8, target_path: []const u8, user_data: *anyopaque) !void
+fn walkLinksDir(
+    allocator: std.mem.Allocator,
+    dir_path: []const u8,
+    user_data: *anyopaque,
+    comptime cb: fn (std.mem.Allocator, []const u8, []const u8, *anyopaque) anyerror!void,
+) !void {
+    var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return;
+    defer dir.close();
+
+    var iter = dir.iterate();
+    while (try iter.next()) |entry| {
+        if (entry.kind == .sym_link) {
+            const full = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
+            defer allocator.free(full);
+            const target = platform.readSymlinkAbsolute(allocator, full) catch continue;
+            defer allocator.free(target);
+            try cb(allocator, entry.name, target, user_data);
+        } else if (entry.kind == .directory and entry.name[0] == '@') {
+            // One level deeper for scoped packages.
+            const scope_path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
+            defer allocator.free(scope_path);
+            var scope_dir = std.fs.openDirAbsolute(scope_path, .{ .iterate = true }) catch continue;
+            defer scope_dir.close();
+            var scope_iter = scope_dir.iterate();
+            while (try scope_iter.next()) |se| {
+                if (se.kind != .sym_link) continue;
+                const full_scoped = try std.fs.path.join(allocator, &.{ scope_path, se.name });
+                defer allocator.free(full_scoped);
+                const target = platform.readSymlinkAbsolute(allocator, full_scoped) catch continue;
+                defer allocator.free(target);
+                const scoped_name = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ entry.name, se.name });
+                defer allocator.free(scoped_name);
+                try cb(allocator, scoped_name, target, user_data);
+            }
+        }
+    }
 }
 
 fn removeLinkEntry(
@@ -262,19 +325,101 @@ fn removeLinkEntry(
 
     std.fs.deleteFileAbsolute(link_path) catch {};
     std.fs.deleteTreeAbsolute(link_path) catch {};
-    writer.emit(.{ .info = try std.fmt.allocPrint(allocator, "unregistered: {s}", .{name}) });
+    const umsg = try std.fmt.allocPrint(allocator, "unregistered: {s}", .{name});
+    defer allocator.free(umsg);
+    writer.emit(.{ .info = umsg });
+}
+
+const ListCtx = struct {
+    arena: std.mem.Allocator,
+    writer: output.Writer,
+    seen: *std.StringHashMapUnmanaged(void),
+    seen_base: std.mem.Allocator,
+    count: *usize,
+};
+
+fn listLinksCb(
+    arena: std.mem.Allocator,
+    name: []const u8,
+    target: []const u8,
+    user_data: *anyopaque,
+) !void {
+    const ctx: *ListCtx = @alignCast(@ptrCast(user_data));
+    const name_owned = try ctx.seen_base.dupe(u8, name);
+    try ctx.seen.put(ctx.seen_base, name_owned, {});
+    ctx.count.* += 1;
+    ctx.writer.emit(.{ .info = try std.fmt.allocPrint(arena, "  {s} → {s}", .{ name, target }) });
 }
 
 fn listLinks(allocator: std.mem.Allocator, links_dir: []const u8, writer: output.Writer) !void {
-    var dir = std.fs.openDirAbsolute(links_dir, .{ .iterate = true }) catch {
-        writer.emit(.{ .info = "no links registered" });
-        return;
-    };
-    defer dir.close();
+    // Use an arena so all allocPrint strings (passed to writer) are freed at once.
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
 
-    var iter = dir.iterate();
-    while (try iter.next()) |entry| {
-        writer.emit(.{ .info = try std.fmt.allocPrint(allocator, "  {s}", .{entry.name}) });
+    var seen = std.StringHashMapUnmanaged(void){};
+    defer {
+        var kit = seen.keyIterator();
+        while (kit.next()) |k| allocator.free(k.*);
+        seen.deinit(allocator);
+    }
+
+    var total: usize = 0;
+
+    var nayr_ctx = ListCtx{
+        .arena = arena,
+        .writer = writer,
+        .seen = &seen,
+        .seen_base = allocator,
+        .count = &total,
+    };
+    try walkLinksDir(arena, links_dir, @ptrCast(&nayr_ctx), listLinksCb);
+
+    const nayr_count = total;
+
+    // Also enumerate Yarn links not yet imported into nayr.
+    const yarn_dir = platform.getYarnLinksDir(allocator) catch null;
+    var yarn_pending: usize = 0;
+    if (yarn_dir) |yd| {
+        defer allocator.free(yd);
+
+        const YarnCtx = struct {
+            arena: std.mem.Allocator,
+            writer: output.Writer,
+            seen_ref: *std.StringHashMapUnmanaged(void),
+            pending: *usize,
+
+            fn cb(
+                a: std.mem.Allocator,
+                name: []const u8,
+                target: []const u8,
+                ud: *anyopaque,
+            ) !void {
+                const self: *@This() = @alignCast(@ptrCast(ud));
+                if (self.seen_ref.contains(name)) return;
+                self.writer.emit(.{ .info = try std.fmt.allocPrint(
+                    a,
+                    "  {s} → {s}  \x1b[2m(yarn, not yet imported)\x1b[0m",
+                    .{ name, target },
+                ) });
+                self.pending.* += 1;
+            }
+        };
+        var yctx = YarnCtx{
+            .arena = arena,
+            .writer = writer,
+            .seen_ref = &seen,
+            .pending = &yarn_pending,
+        };
+        try walkLinksDir(arena, yd, @ptrCast(&yctx), YarnCtx.cb);
+
+        if (yarn_pending > 0) {
+            writer.emit(.{ .info = "  hint: run `nayr link <name>` to import any yarn link into nayr" });
+        }
+    }
+
+    if (nayr_count == 0 and yarn_pending == 0) {
+        writer.emit(.{ .info = "no links registered" });
     }
 }
 
@@ -289,7 +434,9 @@ fn cleanLinks(allocator: std.mem.Allocator, links_dir: []const u8, writer: outpu
         // A broken symlink has no accessible target.
         std.fs.accessAbsolute(full, .{}) catch {
             std.fs.deleteFileAbsolute(full) catch {};
-            writer.emit(.{ .info = try std.fmt.allocPrint(allocator, "removed broken link: {s}", .{entry.name}) });
+            const cmsg = try std.fmt.allocPrint(allocator, "removed broken link: {s}", .{entry.name});
+            defer allocator.free(cmsg);
+            writer.emit(.{ .info = cmsg });
         };
     }
 }

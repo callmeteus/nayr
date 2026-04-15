@@ -99,9 +99,9 @@ nayr workspaces info                   # list all workspaces
 
 ```sh
 nayr link                  # register the current package globally
-nayr link my-package       # link a globally registered package here
-nayr unlink my-package     # remove the link
-nayr mklink "packages/*"   # register multiple packages via glob
+nayr link my-package       # use a globally registered package here
+nayr unlink                # unregister the current package
+nayr unlink my-package     # remove a specific registration
 nayr autolink              # auto-link all registered packages
 ```
 
