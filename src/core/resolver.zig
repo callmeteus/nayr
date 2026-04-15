@@ -39,6 +39,7 @@ const config_types = @import("../config/types.zig");
 const ws_discovery = @import("../workspace/discovery.zig");
 const ws_resolver = @import("../workspace/resolver.zig");
 const output = @import("../util/output.zig");
+const platform = @import("../util/platform.zig");
 const PackageJson = json_util.PackageJson;
 const Lockfile = lockfile_types.Lockfile;
 const Config = config_types.Config;
@@ -53,7 +54,7 @@ pub const ResolvedPackage = struct {
     name: []const u8,
     /// Exact resolved version.
     version: []const u8,
-    /// Tarball download URL (empty for workspace packages).
+    /// Tarball download URL (empty for workspace/linked packages).
     tarball_url: []const u8,
     /// Integrity hash.
     integrity: []const u8,
@@ -63,6 +64,10 @@ pub const ResolvedPackage = struct {
     is_workspace: bool,
     /// Whether this is a git dependency.
     is_git: bool,
+    /// Whether this package was resolved from a local link registry entry
+    /// (`nayr link` or inherited from Yarn). When true, `tarball_url` holds
+    /// the absolute path to the development checkout instead of a download URL.
+    is_linked: bool = false,
     /// Resolved runtime dependencies (name → range).
     dependencies: std.StringHashMapUnmanaged([]const u8),
     /// Resolved optional dependencies.
@@ -206,6 +211,18 @@ pub fn resolve(
         try overrides.put(allocator, kv.key_ptr.*, kv.value_ptr.*);
     }
 
+    // Load the combined nayr + yarn link registry once, before the BFS loop.
+    // Keys and values are owned by this map; freed below.
+    var links_map = try loadLinksRegistry(allocator);
+    defer {
+        var lm_it = links_map.iterator();
+        while (lm_it.next()) |kv| {
+            allocator.free(kv.key_ptr.*);
+            allocator.free(kv.value_ptr.*);
+        }
+        links_map.deinit(allocator);
+    }
+
     // --- FIFO parallel BFS with persistent worker pool ---
     //
     // `queue` is the append-only BFS queue; `qi` is the next unclassified index.
@@ -270,6 +287,9 @@ pub fn resolve(
             const effective_range = overrides.get(req.name) orelse req.range;
 
             // 1. Workspace hit.
+            // NOTE: workspace packages (part of the current monorepo) are
+            // handled here with highest priority. Link-registry packages
+            // (external dev checkouts) are checked immediately after.
             if (ws_res.resolve(req.name, effective_range)) |ws_pkg| {
                 const rp = ResolvedPackage{
                     .name = try allocator.dupe(u8, req.name),
@@ -288,6 +308,58 @@ pub fn resolve(
                 } else {
                     allocator.free(key);
                     allocator.free(rp.version);
+                }
+                writer.emit(.{ .resolve_progress = .{
+                    .resolved = @intCast(resolved_set.count()),
+                    .total = @intCast(queue.items.len),
+                    .name = req.name,
+                } });
+                continue;
+            }
+
+            // 1.5. Link registry hit — highest priority for external dev checkouts.
+            //
+            // If the package name is registered in the nayr or yarn link
+            // registry, use the local development checkout unconditionally.
+            // This matches Yarn Classic semantics: links override registry,
+            // lockfile, and even version constraints. The developer controls
+            // the version they're testing against.
+            if (links_map.get(req.name)) |link_target| {
+                // Read the local package.json to obtain the current version.
+                const pkg_json_path = try std.fs.path.join(allocator, &.{ link_target, "package.json" });
+                defer allocator.free(pkg_json_path);
+                var local_manifest = json_util.parseFile(allocator, pkg_json_path) catch null;
+                // Extract version into an owned string before freeing the manifest.
+                var local_version_owned: []const u8 = try allocator.dupe(u8, "0.0.0");
+                if (local_manifest) |*m| {
+                    if (m.version) |v| {
+                        allocator.free(local_version_owned);
+                        local_version_owned = try allocator.dupe(u8, v);
+                    }
+                    m.deinit(allocator);
+                }
+                defer allocator.free(local_version_owned);
+                const local_version = local_version_owned;
+
+                const key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ req.name, local_version });
+                if (!resolved_set.contains(key)) {
+                    const rp = ResolvedPackage{
+                        .name = try allocator.dupe(u8, req.name),
+                        .version = try allocator.dupe(u8, local_version),
+                        // Re-purpose tarball_url to store the checkout path.
+                        // The fetcher skips is_workspace/is_linked packages.
+                        .tarball_url = try allocator.dupe(u8, link_target),
+                        .integrity = "",
+                        .registry = "",
+                        .is_workspace = true, // treated as workspace by linker
+                        .is_git = false,
+                        .is_linked = true,
+                        .dependencies = .{},
+                        .optional_dependencies = .{},
+                    };
+                    try resolved_set.put(allocator, key, rp);
+                } else {
+                    allocator.free(key);
                 }
                 writer.emit(.{ .resolve_progress = .{
                     .resolved = @intCast(resolved_set.count()),
@@ -426,8 +498,8 @@ pub fn resolve(
             .registry = try allocator.dupe(u8, config.getRegistry(extractScope(result.job.name))),
             .is_workspace = false,
             .is_git = false,
-            .dependencies = .{},
-            .optional_dependencies = .{},
+            .dependencies = try copyStringMap(allocator, &ver_info.dependencies),
+            .optional_dependencies = try copyStringMap(allocator, &ver_info.optional_dependencies),
         };
         try resolved_set.put(allocator, key, rp);
 
@@ -528,6 +600,77 @@ fn freeResolvedPackage(allocator: std.mem.Allocator, pkg: ResolvedPackage) void 
     // deps maps are empty at construction time for git/lockfile packages.
 }
 
+/// Builds a `name → absolute_path` map from both the nayr links registry
+/// (`~/.nayr/links/`) and the Yarn Classic registry (`~/.config/yarn/link/`).
+///
+/// nayr's registry takes precedence. Yarn entries are only added for names not
+/// already present in nayr's registry.
+///
+/// All keys and values are owned by the caller (allocated with `allocator`).
+/// The caller should free them by iterating the map.
+fn loadLinksRegistry(
+    allocator: std.mem.Allocator,
+) !std.StringHashMapUnmanaged([]const u8) {
+    var map = std.StringHashMapUnmanaged([]const u8){};
+
+    const nayr_dir = platform.getLinksDir(allocator) catch return map;
+    defer allocator.free(nayr_dir);
+    try walkLinksIntoMap(allocator, nayr_dir, &map, false);
+
+    const yarn_dir = platform.getYarnLinksDir(allocator) catch return map;
+    defer allocator.free(yarn_dir);
+    try walkLinksIntoMap(allocator, yarn_dir, &map, true); // skip_existing=true
+
+    return map;
+}
+
+/// Walks `dir_path` (depth-2 for scoped packages) and inserts
+/// `name → resolved_target` into `map`.
+///
+/// When `skip_existing` is true, entries whose name is already in the map are
+/// not overwritten (used to give nayr's registry precedence over Yarn's).
+fn walkLinksIntoMap(
+    allocator: std.mem.Allocator,
+    dir_path: []const u8,
+    map: *std.StringHashMapUnmanaged([]const u8),
+    skip_existing: bool,
+) !void {
+    var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return;
+    defer dir.close();
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind == .sym_link) {
+            if (skip_existing and map.contains(entry.name)) continue;
+            const full = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
+            defer allocator.free(full);
+            const target = platform.readSymlinkAbsolute(allocator, full) catch continue;
+            const name_owned = try allocator.dupe(u8, entry.name);
+            try map.put(allocator, name_owned, target);
+        } else if (entry.kind == .directory and entry.name[0] == '@') {
+            const scope_path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
+            defer allocator.free(scope_path);
+            var sd = std.fs.openDirAbsolute(scope_path, .{ .iterate = true }) catch continue;
+            defer sd.close();
+            var sit = sd.iterate();
+            while (try sit.next()) |se| {
+                if (se.kind != .sym_link) continue;
+                const scoped = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ entry.name, se.name });
+                if (skip_existing and map.contains(scoped)) {
+                    allocator.free(scoped);
+                    continue;
+                }
+                const full = try std.fs.path.join(allocator, &.{ scope_path, se.name });
+                defer allocator.free(full);
+                const target = platform.readSymlinkAbsolute(allocator, full) catch {
+                    allocator.free(scoped);
+                    continue;
+                };
+                try map.put(allocator, scoped, target);
+            }
+        }
+    }
+}
+
 fn enqueueMapDeps(
     allocator: std.mem.Allocator,
     queue: *std.ArrayList(DepRequest),
@@ -559,9 +702,26 @@ fn resolvedFromLockEntry(
         .registry = try allocator.dupe(u8, config.getRegistry(extractScope(name))),
         .is_workspace = false,
         .is_git = false,
-        .dependencies = .{},
-        .optional_dependencies = .{},
+        .dependencies = try copyStringMap(allocator, &entry.dependencies),
+        .optional_dependencies = try copyStringMap(allocator, &entry.optional_dependencies),
     };
+}
+
+/// Deep-copies a `StringHashMapUnmanaged([]const u8)` with owned keys and values.
+fn copyStringMap(
+    allocator: std.mem.Allocator,
+    src: *const std.StringHashMapUnmanaged([]const u8),
+) !std.StringHashMapUnmanaged([]const u8) {
+    var dst = std.StringHashMapUnmanaged([]const u8){};
+    var it = src.iterator();
+    while (it.next()) |kv| {
+        try dst.put(
+            allocator,
+            try allocator.dupe(u8, kv.key_ptr.*),
+            try allocator.dupe(u8, kv.value_ptr.*),
+        );
+    }
+    return dst;
 }
 
 /// Returns true when `range` is a git dependency specifier.

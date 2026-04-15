@@ -283,10 +283,15 @@ fn extractTarball(allocator: std.mem.Allocator, data: []const u8, dest_dir: []co
         .link_name_buffer = &link_name_buf,
     });
     while (try tar_iter.next()) |entry| {
-        // Strip the leading `package/` prefix that npm uses in tarballs.
+        // npm tarballs always have a single root directory (commonly "package/"
+        // but some packages use e.g. "ejs-v3.1.10/"). Strip the first path
+        // component unconditionally so the extracted files land directly in
+        // dest_dir regardless of the root directory name.
         var path = entry.name;
-        if (std.mem.startsWith(u8, path, "package/")) path = path["package/".len..];
         if (std.mem.startsWith(u8, path, "./")) path = path[2..];
+        if (std.mem.indexOfScalar(u8, path, '/')) |slash| {
+            path = path[slash + 1 ..];
+        }
         if (path.len == 0) continue;
 
         const dest = try std.fs.path.join(allocator, &.{ dest_dir, path });
@@ -296,7 +301,11 @@ fn extractTarball(allocator: std.mem.Allocator, data: []const u8, dest_dir: []co
             .directory => try fs_util.mkdirAllRecursive(allocator, dest),
             .file => {
                 try fs_util.mkdirParents(allocator, dest);
-                const file = try std.fs.createFileAbsolute(dest, .{ .truncate = true });
+                // Preserve the executable bit from the tar header.
+                // If the owner-execute bit (0o100) is set in the tar mode, the
+                // file is treated as executable (0o755). Otherwise 0o644.
+                const file_mode: std.fs.File.Mode = if (entry.mode & 0o100 != 0) 0o755 else 0o644;
+                const file = try std.fs.createFileAbsolute(dest, .{ .truncate = true, .mode = file_mode });
                 defer file.close();
                 try entry.writeAll(file.writer());
             },

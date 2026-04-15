@@ -1,18 +1,29 @@
 //! Hoisting Algorithm
 //!
-//! Implements the Yarn Classic v1 package hoisting algorithm. Packages are
-//! "hoisted" (moved up in the node_modules tree) to reduce duplication.
-//! The algorithm runs in 4 phases: prepass, seeding, hoist, and taint.
+//! Implements a package hoisting algorithm compatible with npm/Yarn Classic.
+//! Packages are "hoisted" (moved up in the node_modules tree) to reduce
+//! duplication. The algorithm runs in 4 phases:
 //!
-//! Reference: https://github.com/yarnpkg/yarn/blob/master/src/package-hoister.js
+//!   1. Prepass   — count how many resolved packages share each name.
+//!   2. Seeding   — elect the "best" (most popular, then newest) version of
+//!                  each package for root-level placement.
+//!   3. Hoist     — assign root install paths; skip non-root versions for now.
+//!   4. Resolve   — for every root-hoisted package, check if its declared
+//!                  dependency ranges are satisfied by the root-elected version
+//!                  of each dep. If not, install the correct version nested
+//!                  directly inside that package's node_modules subdirectory.
 //!
-//! The result is a flat list of (package, location) pairs where `location`
-//! is the node_modules path where the package should be installed. The linker
-//! uses this to create the actual directory tree.
+//! ## Why Phase 4 matters
+//!
+//! When a package P requires `dep@^2.x` but the root has `dep@4.x`, Node.js
+//! module resolution will find the wrong version. The fix is to place
+//! `dep@2.x` at `node_modules/<P>/node_modules/<dep>` so that Node.js finds
+//! it before the root entry.
 
 const std = @import("std");
 const resolver = @import("resolver.zig");
 const nohoist = @import("../workspace/nohoist.zig");
+const semver = @import("../semver/parser.zig");
 const ResolvedPackage = resolver.ResolvedPackage;
 
 // ============================================================================
@@ -27,8 +38,8 @@ pub const HoistedPackage = struct {
     version: []const u8,
     /// Install path relative to the project root.
     /// Examples:
-    ///   `node_modules/lodash`                      (root-hoisted)
-    ///   `packages/frontend/node_modules/react`     (workspace-scoped)
+    ///   `node_modules/lodash`                          (root-hoisted)
+    ///   `node_modules/lazystream/node_modules/readable-stream`  (nested)
     install_path: []const u8,
     /// The resolved package this hoisted entry refers to.
     pkg: *const ResolvedPackage,
@@ -43,7 +54,7 @@ pub const HoistedPackage = struct {
 /// ## Parameters
 /// - `allocator`: All result data is allocated here.
 /// - `packages`: The complete resolved package map from the resolver.
-/// - `nohoist_checker`: Evaluates nohoist rules for each package.
+/// - `checker`: Evaluates nohoist rules for each package.
 ///
 /// ## Returns
 /// A flat slice of `HoistedPackage` entries. Caller owns the slice.
@@ -59,9 +70,8 @@ pub fn hoist(
     while (it.next()) |p| try pkgs.append(p);
 
     // -------------------------------------------------------------------------
-    // Phase 1: Prepass - count occurrences of each (name, version) pair.
+    // Phase 1: Prepass — count how many entries share a (name, version) key.
     // -------------------------------------------------------------------------
-    // Keys are heap-allocated "<name>@<version>" strings owned by this map.
     var version_counts = std.StringHashMapUnmanaged(VersionCount){};
     defer {
         var vc_free_it = version_counts.keyIterator();
@@ -71,21 +81,21 @@ pub fn hoist(
 
     for (pkgs.items) |pkg| {
         const key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ pkg.name, pkg.version });
-
         const entry = try version_counts.getOrPut(allocator, key);
         if (entry.found_existing) {
-            // The map already owns the key from a previous insert — free the dup.
             allocator.free(key);
         } else {
-            // The map now owns `key` — keep it alive until the map is freed.
             entry.value_ptr.* = VersionCount{ .name = pkg.name, .version = pkg.version, .count = 0 };
         }
         entry.value_ptr.*.count += 1;
     }
 
     // -------------------------------------------------------------------------
-    // Phase 2: Seeding - seed the most popular version of each package name
-    // at the root level.
+    // Phase 2: Seeding — elect the root version for each package name.
+    //
+    // Prefer the version with the highest dependent-count. Break ties by
+    // choosing the semantically newer version: the newer release satisfies a
+    // strict superset of ranges, so hoisting it to root minimises nesting.
     // -------------------------------------------------------------------------
     var root_versions = std.StringHashMapUnmanaged([]const u8){};
     defer root_versions.deinit(allocator);
@@ -94,11 +104,11 @@ pub fn hoist(
     while (vc_it.next()) |kv| {
         const vc = kv.value_ptr;
         if (root_versions.get(vc.name)) |existing_ver| {
-            // Keep the version with the higher count; break ties with semver order.
             const lookup_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ vc.name, existing_ver });
             defer allocator.free(lookup_key);
             const existing_count = version_counts.get(lookup_key) orelse continue;
-            if (vc.count > existing_count.count) {
+            const newer = semver.compareVersions(vc.version, existing_ver) == .gt;
+            if (vc.count > existing_count.count or (vc.count == existing_count.count and newer)) {
                 try root_versions.put(allocator, vc.name, vc.version);
             }
         } else {
@@ -107,27 +117,36 @@ pub fn hoist(
     }
 
     // -------------------------------------------------------------------------
-    // Phase 3 & 4: Hoist + Taint
+    // Phase 3: Hoist — assign root install paths to root-elected packages.
     //
-    // For each package, determine whether it can be placed at the root
-    // node_modules or must stay in a nested location.
-    //
-    // Blocking reasons (HoistBlock):
-    //   - Version collision: the root already has a different version.
-    //   - Nohoist rule: the package matches a nohoist pattern.
-    //   - Taint: the root position was reserved by a prior hoist operation.
+    // Non-root versions are NOT placed at any path here; Phase 4 will insert
+    // them nested directly under their dependents where they are needed.
     // -------------------------------------------------------------------------
+
+    // Build name → list-of-all-resolved-packages for Phase 4 lookups.
+    var name_to_pkgs = std.StringHashMapUnmanaged(std.ArrayListUnmanaged(*const ResolvedPackage)){};
+    defer {
+        var ntp_it = name_to_pkgs.iterator();
+        while (ntp_it.next()) |kv| kv.value_ptr.deinit(allocator);
+        name_to_pkgs.deinit(allocator);
+    }
+    for (pkgs.items) |pkg| {
+        const gop = try name_to_pkgs.getOrPut(allocator, pkg.name);
+        if (!gop.found_existing) gop.value_ptr.* = .{};
+        try gop.value_ptr.append(allocator, pkg);
+    }
+
     var result = std.ArrayList(HoistedPackage).init(allocator);
+
+    // Track install_paths already added to avoid duplicate nested entries.
+    var added_paths = std.StringHashMapUnmanaged(void){};
+    defer added_paths.deinit(allocator);
 
     for (pkgs.items) |pkg| {
         if (pkg.is_workspace) {
-            // Workspace packages are symlinked, not hoisted.
-            try result.append(.{
-                .name = pkg.name,
-                .version = pkg.version,
-                .install_path = try std.fmt.allocPrint(allocator, "node_modules/{s}", .{pkg.name}),
-                .pkg = pkg,
-            });
+            const ip = try std.fmt.allocPrint(allocator, "node_modules/{s}", .{pkg.name});
+            try result.append(.{ .name = pkg.name, .version = pkg.version, .install_path = ip, .pkg = pkg });
+            try added_paths.put(allocator, ip, {});
             continue;
         }
 
@@ -136,25 +155,90 @@ pub fn hoist(
         defer allocator.free(vpath);
         const blocked_by_nohoist = checker.shouldNohoist(vpath);
 
-        // Check if this version is the root-elected version.
         const root_ver = root_versions.get(pkg.name);
         const is_root_version = root_ver != null and std.mem.eql(u8, root_ver.?, pkg.version);
 
-        const install_path = if (!blocked_by_nohoist and is_root_version)
-            // Root hoist: simple path.
-            try std.fmt.allocPrint(allocator, "node_modules/{s}", .{pkg.name})
-        else
-            // Nested: stays in a workspace-scoped location. For simplicity,
-            // nested packages are placed under the first workspace that needs them.
-            // A full implementation would track the requesting workspace.
-            try std.fmt.allocPrint(allocator, "node_modules/.nested/{s}/{s}", .{ pkg.name, pkg.version });
+        if (!blocked_by_nohoist and is_root_version) {
+            const ip = try std.fmt.allocPrint(allocator, "node_modules/{s}", .{pkg.name});
+            try result.append(.{ .name = pkg.name, .version = pkg.version, .install_path = ip, .pkg = pkg });
+            try added_paths.put(allocator, ip, {});
+        }
+        // Non-root versions are handled in Phase 4.
+    }
 
-        try result.append(.{
-            .name = pkg.name,
-            .version = pkg.version,
-            .install_path = install_path,
-            .pkg = pkg,
-        });
+    // -------------------------------------------------------------------------
+    // Phase 4: Conflict resolution — BFS nesting of alternative versions.
+    //
+    // Process all hoisted packages (root + previously nested) through a BFS
+    // work queue. For each package, check whether the root-elected version of
+    // each declared dependency satisfies the required range. If not, find the
+    // correct resolved version and install it nested directly under the
+    // dependent package, then enqueue that nested package for further checking.
+    //
+    // This handles arbitrary-depth nesting (e.g. web-resource-inliner →
+    // nested htmlparser2@5 → nested entities@2) without the depth-1 limitation.
+    // -------------------------------------------------------------------------
+
+    // BFS work queue: packages whose dependency conflicts still need checking.
+    // We use a plain ArrayList of HoistedPackage (value copy) so that
+    // reallocations of `result` don't affect us.
+    var work_queue = std.ArrayList(HoistedPackage).init(allocator);
+    defer work_queue.deinit();
+
+    // Seed the queue with all packages hoisted in Phase 3.
+    try work_queue.appendSlice(result.items);
+
+    var qi4: usize = 0;
+    while (qi4 < work_queue.items.len) {
+        const hp = work_queue.items[qi4];
+        qi4 += 1;
+
+        var dep_it = hp.pkg.dependencies.iterator();
+        while (dep_it.next()) |dep| {
+            const dep_name = dep.key_ptr.*;
+            const dep_range = dep.value_ptr.*;
+
+            // Determine what version Node.js will find for this dep when
+            // walking up from hp's install_path. We approximate this as the
+            // root version (the most common case and always the worst-case).
+            const root_dep_ver = root_versions.get(dep_name) orelse continue;
+
+            // If root version satisfies the required range, no nesting needed.
+            if (semver.satisfies(allocator, root_dep_ver, dep_range)) continue;
+
+            // Root version doesn't satisfy; find the best matching candidate.
+            const candidates = name_to_pkgs.get(dep_name) orelse continue;
+            var best: ?*const ResolvedPackage = null;
+            for (candidates.items) |candidate| {
+                if (!semver.satisfies(allocator, candidate.version, dep_range)) continue;
+                if (best == null or semver.compareVersions(candidate.version, best.?.version) == .gt) {
+                    best = candidate;
+                }
+            }
+            const dep_pkg = best orelse continue;
+
+            // Install nested under this package's directory.
+            const nested_path = try std.fmt.allocPrint(
+                allocator,
+                "{s}/node_modules/{s}",
+                .{ hp.install_path, dep_name },
+            );
+            if (added_paths.contains(nested_path)) {
+                allocator.free(nested_path);
+                continue;
+            }
+            try added_paths.put(allocator, nested_path, {});
+
+            const new_hp = HoistedPackage{
+                .name = dep_pkg.name,
+                .version = dep_pkg.version,
+                .install_path = nested_path,
+                .pkg = dep_pkg,
+            };
+            try result.append(new_hp);
+            // Enqueue the newly-nested package so its own deps are checked.
+            try work_queue.append(new_hp);
+        }
     }
 
     return result.toOwnedSlice();
@@ -165,22 +249,16 @@ pub fn hoist(
 // ============================================================================
 
 /// Tracks how many times a specific (name, version) pair appears in the tree.
-/// Used in Phase 1 to elect the most popular version for root hoisting.
 const VersionCount = struct {
     name: []const u8,
     version: []const u8,
-    /// Number of packages that depend on exactly this (name, version).
     count: u32,
 };
 
 /// Reasons why a package cannot be hoisted to a higher position.
 pub const HoistBlock = enum {
-    /// A different version of the same package already occupies this level.
     version_collision,
-    /// A peer dependency constraint prevents hoisting.
     peer_dependency,
-    /// The package matches a nohoist pattern from the workspace config.
     nohoist_rule,
-    /// The position was tainted by a previous hoist operation.
     tainted,
 };

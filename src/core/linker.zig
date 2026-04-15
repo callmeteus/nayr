@@ -62,13 +62,24 @@ pub fn link(
         try installed.put(allocator, hp.name, {});
 
         if (hp.pkg.is_workspace) {
-            // Workspace: symlink to the workspace directory.
+            // Workspace / linked: symlink to the local directory.
             const ws_path = workspace_paths.get(hp.name) orelse continue;
             fs_util.mkdirParents(allocator, dest) catch {};
             std.fs.deleteTreeAbsolute(dest) catch {};
             platform.symlinkOrJunction(ws_path, dest) catch |err| {
                 writer.emit(.{ .warning = @errorName(err) });
             };
+            if (hp.pkg.is_linked) {
+                const msg = std.fmt.allocPrint(
+                    allocator,
+                    "linked: {s} → {s}",
+                    .{ hp.name, ws_path },
+                ) catch null;
+                if (msg) |m| {
+                    defer allocator.free(m);
+                    writer.emit(.{ .info = m });
+                }
+            }
         } else {
             // Registry package: copy from cache.
             const cache_dir = cache.extractedDir(hp.pkg.registry, hp.name, hp.version) catch continue;

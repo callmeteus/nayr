@@ -75,6 +75,13 @@ pub const Event = union(enum) {
     /// A package lifecycle script started.
     script_start: struct { name: []const u8, script: []const u8 },
 
+    /// Captured output from a lifecycle script (shown on failure).
+    script_output: struct {
+        name: []const u8,
+        stdout: []const u8,
+        stderr: []const u8,
+    },
+
     /// Informational message shown to the user.
     info: []const u8,
 
@@ -339,6 +346,23 @@ const TuiWriter = struct {
                 self.clearProgress();
                 w.print("  $ {s} [{s}]\n", .{ s.script, s.name }) catch {};
             },
+            .script_output => |s| {
+                self.clearProgress();
+                const prefix = if (self.colour) "\x1b[2m" else "";
+                const reset = if (self.colour) "\x1b[0m" else "";
+                if (s.stdout.len > 0) {
+                    var lines = std.mem.splitScalar(u8, std.mem.trimRight(u8, s.stdout, "\n"), '\n');
+                    while (lines.next()) |line| {
+                        w.print("{s}  │ {s}{s}\n", .{ prefix, line, reset }) catch {};
+                    }
+                }
+                if (s.stderr.len > 0) {
+                    var lines = std.mem.splitScalar(u8, std.mem.trimRight(u8, s.stderr, "\n"), '\n');
+                    while (lines.next()) |line| {
+                        w.print("{s}  │ {s}{s}\n", .{ prefix, line, reset }) catch {};
+                    }
+                }
+            },
         }
     }
 
@@ -418,6 +442,10 @@ const TextWriter = struct {
                 if (self.verbose) w.print("[cache] hit {s}@{s}\n", .{ p.name, p.version }) catch {};
             },
             .script_start => |s| w.print("[script] {s}: {s}\n", .{ s.name, s.script }) catch {},
+            .script_output => |s| {
+                if (s.stdout.len > 0) w.print("{s}", .{s.stdout}) catch {};
+                if (s.stderr.len > 0) w.print("{s}", .{s.stderr}) catch {};
+            },
         }
     }
 
@@ -504,6 +532,10 @@ const JsonWriter = struct {
             .script_start => |s| w.print(
                 "{{\"type\":\"script_start\",\"name\":{s},\"script\":{s}}}\n",
                 .{ jsonStr(s.name), jsonStr(s.script) },
+            ) catch {},
+            .script_output => |s| w.print(
+                "{{\"type\":\"script_output\",\"name\":{s},\"stdout\":{s},\"stderr\":{s}}}\n",
+                .{ jsonStr(s.name), jsonStr(s.stdout), jsonStr(s.stderr) },
             ) catch {},
         }
     }
