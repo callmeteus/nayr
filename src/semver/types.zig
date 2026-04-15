@@ -21,7 +21,10 @@ pub const Version = struct {
     /// Build metadata - ignored in comparisons per SemVer spec.
     build: []const u8 = "",
 
-    /// Parses a version string. Does not allocate; slices point into `s`.
+    /// Parses a strict semver version string `major.minor.patch[-pre][+build]`.
+    ///
+    /// All three numeric components are required. Use `parseLoose` when the
+    /// string may be a partial version like `"9"` or `"9.1"`.
     ///
     /// ## Parameters
     /// - `s`: The version string to parse (e.g. "1.2.3-beta.1+build.42").
@@ -53,6 +56,35 @@ pub const Version = struct {
         const major = try parseU32(it.next() orelse return error.InvalidVersion);
         const minor = try parseU32(it.next() orelse return error.InvalidVersion);
         const patch = try parseU32(it.next() orelse return error.InvalidVersion);
+
+        return Version{ .major = major, .minor = minor, .patch = patch, .pre = pre, .build = build };
+    }
+
+    /// Parses a partial or full version string, defaulting missing components
+    /// to zero. Accepts `"9"` → `9.0.0`, `"9.1"` → `9.1.0`, `"9.1.2"` → `9.1.2`.
+    ///
+    /// Used by the range parser for `^X` and `~X` where X may be partial.
+    pub fn parseLoose(s: []const u8) !Version {
+        var rest = s;
+        if (rest.len > 0 and rest[0] == 'v') rest = rest[1..];
+
+        var build: []const u8 = "";
+        if (std.mem.indexOfScalar(u8, rest, '+')) |plus| {
+            build = rest[plus + 1 ..];
+            rest = rest[0..plus];
+        }
+
+        var pre: []const u8 = "";
+        if (std.mem.indexOfScalar(u8, rest, '-')) |dash| {
+            pre = rest[dash + 1 ..];
+            rest = rest[0..dash];
+        }
+
+        var it = std.mem.splitScalar(u8, rest, '.');
+        const major_s = it.next() orelse return error.InvalidVersion;
+        const major = try parseU32(major_s);
+        const minor = if (it.next()) |ms| (parseU32(ms) catch 0) else 0;
+        const patch = if (it.next()) |ps| (parseU32(ps) catch 0) else 0;
 
         return Version{ .major = major, .minor = minor, .patch = patch, .pre = pre, .build = build };
     }

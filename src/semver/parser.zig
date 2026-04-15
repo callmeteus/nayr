@@ -34,6 +34,10 @@ pub fn satisfies(allocator: std.mem.Allocator, version_str: []const u8, range_st
 /// Implements the npm convention: if `dist-tags.latest` satisfies the range
 /// it is preferred even if a newer version also satisfies it.
 ///
+/// Pre-release versions (e.g. `1.0.0-beta.1`) are excluded from consideration
+/// unless the range itself references a pre-release version — this matches npm
+/// semver's behaviour where `^4` should never resolve to `5.0.0-beta.1`.
+///
 /// ## Parameters
 /// - `allocator`: Scratch allocator for range parsing.
 /// - `versions`: Slice of version strings to consider.
@@ -54,11 +58,17 @@ pub fn maxSatisfying(
 
     const r = Range.parse(a, range_str) catch return null;
 
+    // npm semver rule: pre-release candidates are only allowed when the range
+    // itself contains a pre-release tag in one of its comparators.
+    const range_allows_pre = rangeHasPreRelease(r);
+
     // If "latest" satisfies the range, prefer it (npm convention).
     if (latest) |lat| {
-        if (Version.parse(lat)) |lv| {
-            if (r.satisfies(lv)) return lat;
-        } else |_| {}
+        const lv = Version.parse(lat) catch null;
+        if (lv) |v| {
+            // Only use "latest" if it doesn't violate pre-release rules.
+            if ((v.pre.len == 0 or range_allows_pre) and r.satisfies(v)) return lat;
+        }
     }
 
     var best: ?Version = null;
@@ -66,6 +76,8 @@ pub fn maxSatisfying(
 
     for (versions) |vs| {
         const v = Version.parse(vs) catch continue;
+        // Skip pre-release versions unless the range explicitly allows them.
+        if (v.pre.len > 0 and !range_allows_pre) continue;
         if (!r.satisfies(v)) continue;
         if (best == null or best.?.lt(v)) {
             best = v;
@@ -74,6 +86,17 @@ pub fn maxSatisfying(
     }
 
     return best_str;
+}
+
+/// Returns true when any comparator in the range references a pre-release
+/// version (e.g. `^1.0.0-beta.1` or `>=1.0.0-alpha`).
+fn rangeHasPreRelease(r: Range) bool {
+    for (r.sets) |set| {
+        for (set) |cmp| {
+            if (cmp.version.pre.len > 0) return true;
+        }
+    }
+    return false;
 }
 
 /// Compares two version strings.

@@ -116,6 +116,32 @@ pub const Range = struct {
 // Internal parsers
 // ============================================================================
 
+/// Normalises a comparator set string so that operators and their versions
+/// are never separated by whitespace. e.g. `">= 1.2.3 < 3"` becomes
+/// `">=1.2.3 <3"`. This handles the common npm convention of writing
+/// comparators with a space after the operator.
+fn normalizeComparatorSet(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
+    var out = try std.ArrayList(u8).initCapacity(allocator, s.len);
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        const c = s[i];
+        try out.append(c);
+        // After an operator character, consume any spaces that follow so the
+        // version token merges directly with its operator.
+        const is_op_char = c == '>' or c == '<' or c == '=';
+        if (is_op_char) {
+            // Consume an optional second operator character (e.g. '=' in '>=').
+            if (i + 1 < s.len and (s[i + 1] == '=' or s[i + 1] == '>')) {
+                i += 1;
+                try out.append(s[i]);
+            }
+            // Skip spaces between the operator and the version number.
+            while (i + 1 < s.len and s[i + 1] == ' ') i += 1;
+        }
+    }
+    return out.toOwnedSlice();
+}
+
 /// Parses a single comparator set (space-separated comparators).
 /// Expands sugar forms (^, ~, *, x ranges, hyphen ranges) into pairs of
 /// `>=` and `<` comparators.
@@ -126,15 +152,20 @@ fn parseComparatorSet(allocator: std.mem.Allocator, s: []const u8) ![]const Comp
     if (std.mem.indexOf(u8, s, " - ")) |dash| {
         const lo_str = std.mem.trim(u8, s[0..dash], " ");
         const hi_str = std.mem.trim(u8, s[dash + 3 ..], " ");
-        const lo = try Version.parse(lo_str);
-        const hi = try Version.parse(hi_str);
+        const lo = try Version.parseLoose(lo_str);
+        const hi = try Version.parseLoose(hi_str);
         try list.append(.{ .op = .gte, .version = lo });
         try list.append(.{ .op = .lte, .version = hi });
         return list.toOwnedSlice();
     }
 
+    // Normalize spaces between operators and versions before tokenising so
+    // that ">= 1.2.3 < 3" is treated the same as ">=1.2.3 <3".
+    const normalized = try normalizeComparatorSet(allocator, s);
+    defer allocator.free(normalized);
+
     // Split on whitespace; each token is one comparator.
-    var tok_it = std.mem.tokenizeAny(u8, s, " \t");
+    var tok_it = std.mem.tokenizeAny(u8, normalized, " \t");
     while (tok_it.next()) |token| {
         const expanded = try expandSugar(allocator, token);
         for (expanded) |c| try list.append(c);
@@ -156,26 +187,33 @@ fn expandSugar(allocator: std.mem.Allocator, token: []const u8) ![]const Compara
     if (token[0] == '^') {
         // Caret range: compatible with. Allows patch and minor updates that
         // do not modify the left-most non-zero digit.
-        const v = try Version.parse(token[1..]);
+        // Uses parseLoose so that `^9` (no minor/patch) is treated as `^9.0.0`
+        // and `^9.1` as `^9.1.0`.
+        const v = try Version.parseLoose(token[1..]);
         try list.append(.{ .op = .gte, .version = v });
         if (v.major != 0) {
-            // ^1.2.3 := >=1.2.3 <2.0.0
+            // ^1.2.3 := >=1.2.3 <2.0.0  /  ^9 := >=9.0.0 <10.0.0
             try list.append(.{ .op = .lt, .version = .{ .major = v.major + 1, .minor = 0, .patch = 0 } });
         } else if (v.minor != 0) {
             // ^0.2.3 := >=0.2.3 <0.3.0
             try list.append(.{ .op = .lt, .version = .{ .major = 0, .minor = v.minor + 1, .patch = 0 } });
         } else {
-            // ^0.0.3 := >=0.0.3 <0.0.4
-            try list.append(.{ .op = .lt, .version = .{ .major = 0, .minor = 0, .patch = v.patch + 1 } });
+            // ^0.0.3 := >=0.0.3 <0.0.4  /  ^0 := >=0.0.0 <1.0.0
+            if (v.patch != 0) {
+                try list.append(.{ .op = .lt, .version = .{ .major = 0, .minor = 0, .patch = v.patch + 1 } });
+            } else {
+                try list.append(.{ .op = .lt, .version = .{ .major = 1, .minor = 0, .patch = 0 } });
+            }
         }
         return list.toOwnedSlice();
     }
 
     if (token[0] == '~') {
         // Tilde range: approximately. Allows patch updates.
-        const v = try Version.parse(token[1..]);
+        // Uses parseLoose so that `~9` and `~9.1` work correctly.
+        const v = try Version.parseLoose(token[1..]);
         try list.append(.{ .op = .gte, .version = v });
-        // ~1.2.3 := >=1.2.3 <1.3.0
+        // ~1.2.3 := >=1.2.3 <1.3.0  /  ~9 := >=9.0.0 <9.1.0
         try list.append(.{ .op = .lt, .version = .{ .major = v.major, .minor = v.minor + 1, .patch = 0 } });
         return list.toOwnedSlice();
     }
@@ -187,12 +225,13 @@ fn expandSugar(allocator: std.mem.Allocator, token: []const u8) ![]const Compara
     }
 
     // Explicit operator: >=, >, <=, <, =
+    // Uses parseLoose so that partial versions like "3" or "1.2" work.
     if (token[0] == '>') {
         if (token.len > 1 and token[1] == '=') {
-            const v = try Version.parse(token[2..]);
+            const v = try Version.parseLoose(token[2..]);
             try list.append(.{ .op = .gte, .version = v });
         } else {
-            const v = try Version.parse(token[1..]);
+            const v = try Version.parseLoose(token[1..]);
             try list.append(.{ .op = .gt, .version = v });
         }
         return list.toOwnedSlice();
@@ -200,17 +239,17 @@ fn expandSugar(allocator: std.mem.Allocator, token: []const u8) ![]const Compara
 
     if (token[0] == '<') {
         if (token.len > 1 and token[1] == '=') {
-            const v = try Version.parse(token[2..]);
+            const v = try Version.parseLoose(token[2..]);
             try list.append(.{ .op = .lte, .version = v });
         } else {
-            const v = try Version.parse(token[1..]);
+            const v = try Version.parseLoose(token[1..]);
             try list.append(.{ .op = .lt, .version = v });
         }
         return list.toOwnedSlice();
     }
 
     if (token[0] == '=') {
-        const v = try Version.parse(token[1..]);
+        const v = try Version.parseLoose(token[1..]);
         try list.append(.{ .op = .eq, .version = v });
         return list.toOwnedSlice();
     }

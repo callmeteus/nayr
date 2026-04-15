@@ -161,7 +161,9 @@ pub const Cache = struct {
         if ((std.fs.accessAbsolute(sentinel, .{}) catch null) != null) return;
 
         // Extract to a temp directory first.
-        const tmp_dir_path = try fs_util.tempDirPath(self.allocator, try std.fs.path.join(self.allocator, &.{ self.root, ".tmp" }));
+        const tmp_base = try std.fs.path.join(self.allocator, &.{ self.root, ".tmp" });
+        defer self.allocator.free(tmp_base);
+        const tmp_dir_path = try fs_util.tempDirPath(self.allocator, tmp_base);
         defer self.allocator.free(tmp_dir_path);
         try fs_util.mkdirAllRecursive(self.allocator, tmp_dir_path);
 

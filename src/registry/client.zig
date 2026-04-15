@@ -169,7 +169,8 @@ pub const RegistryClient = struct {
 
 /// Runs `curl` to GET `url` and returns the response body.
 ///
-/// Passes auth token as a Bearer header when non-null.
+/// On failure, writes a diagnostic line to stderr with the URL and the
+/// error message reported by curl, then returns `HttpError` or `NetworkError`.
 /// Caller owns the returned slice.
 fn curlGet(
     allocator: std.mem.Allocator,
@@ -185,10 +186,12 @@ fn curlGet(
     try argv.append(url); // URL must be last
 
     const result = try runCapture(allocator, argv.items);
+    defer allocator.free(result.stderr);
     errdefer allocator.free(result.stdout);
 
     if (result.exit_code != 0) {
         allocator.free(result.stdout);
+        logCurlError(url, result.exit_code, result.stderr);
         return if (result.exit_code == 22) error.HttpError else error.NetworkError;
     }
 
@@ -220,7 +223,7 @@ fn curlDownloadToFile(
     child.stderr_behavior = .Pipe;
     try child.spawn();
 
-    const stderr_buf = try child.stderr.?.reader().readAllAlloc(allocator, 4 * 1024);
+    const stderr_buf = try child.stderr.?.reader().readAllAlloc(allocator, 8 * 1024);
     defer allocator.free(stderr_buf);
 
     const term = try child.wait();
@@ -229,7 +232,10 @@ fn curlDownloadToFile(
         else => 1,
     };
 
-    if (exit_code != 0) return error.NetworkError;
+    if (exit_code != 0) {
+        logCurlError(url, exit_code, stderr_buf);
+        return error.NetworkError;
+    }
 }
 
 /// Appends the common curl flags shared by all requests.
@@ -261,26 +267,57 @@ fn buildCurlBaseArgs(
     }
 }
 
-/// Result from `runCapture`.
+/// Writes a human-readable error line to stderr when a curl request fails.
+///
+/// Extracts the useful part of curl's `--show-error` output, e.g.:
+///   `curl: (22) The requested URL returned error: 404 Not Found`
+///   → `  warn  HTTP 404 Not Found — https://registry.npmjs.org/lodash`
+fn logCurlError(url: []const u8, exit_code: u8, curl_stderr: []const u8) void {
+    const nayr_stderr = std.io.getStdErr().writer();
+
+    // Extract the human-readable part after "curl: (NN) ".
+    const curl_msg: []const u8 = blk: {
+        const trimmed = std.mem.trim(u8, curl_stderr, " \t\r\n");
+        // curl error lines look like: "curl: (22) Some message"
+        if (std.mem.indexOf(u8, trimmed, ") ")) |paren_end| {
+            break :blk trimmed[paren_end + 2 ..];
+        }
+        if (trimmed.len > 0) break :blk trimmed;
+        // Fallback: describe by exit code.
+        break :blk if (exit_code == 22) "HTTP 4xx/5xx error" else "network error";
+    };
+
+    nayr_stderr.print(
+        "  warn  {s}\n        url: {s}\n",
+        .{ curl_msg, url },
+    ) catch {};
+}
+
+/// Result from `runCapture`. Both slices are owned by the caller.
 const CaptureResult = struct {
     stdout: []const u8,
+    /// curl error output (--show-error). Contains the human-readable error
+    /// message on failure (e.g. "curl: (22) The requested URL returned error: 404").
+    stderr: []const u8,
     exit_code: u8,
 };
 
-/// Spawns `argv[0]` with the given arguments, captures stdout, and returns
-/// both the captured bytes and the process exit code.
+/// Spawns `argv[0]` with the given arguments, captures stdout and stderr,
+/// and returns all three. Caller must free both `stdout` and `stderr`.
 fn runCapture(allocator: std.mem.Allocator, argv: []const []const u8) !CaptureResult {
     var child = std.process.Child.init(argv, allocator);
     child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe; // suppress curl noise on stderr
+    child.stderr_behavior = .Pipe;
     try child.spawn();
 
+    // Read stdout first, then stderr. This is safe because curl with --silent
+    // writes nothing to stderr on success and only a short error message on
+    // failure — the OS pipe buffer (typically 64 KB) is never exhausted.
     const stdout = try child.stdout.?.reader().readAllAlloc(allocator, 32 * 1024 * 1024);
     errdefer allocator.free(stdout);
 
-    // Drain stderr so the process doesn't block on a full pipe.
-    const stderr_buf = try child.stderr.?.reader().readAllAlloc(allocator, 4 * 1024);
-    defer allocator.free(stderr_buf);
+    const stderr_out = try child.stderr.?.reader().readAllAlloc(allocator, 8 * 1024);
+    errdefer allocator.free(stderr_out);
 
     const term = try child.wait();
     const exit_code: u8 = switch (term) {
@@ -288,7 +325,7 @@ fn runCapture(allocator: std.mem.Allocator, argv: []const []const u8) !CaptureRe
         else => 1,
     };
 
-    return .{ .stdout = stdout, .exit_code = exit_code };
+    return .{ .stdout = stdout, .stderr = stderr_out, .exit_code = exit_code };
 }
 
 // ============================================================================

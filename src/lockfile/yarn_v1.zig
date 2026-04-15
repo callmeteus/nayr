@@ -223,10 +223,12 @@ const Parser = struct {
             const indent = self.indentLevel();
             if (indent < expected_indent) break;
 
-            self.pos += indent;
-            const key = try self.allocator.dupe(u8, self.readWord());
-            self.skipInlineWhitespace();
-            const val = try self.allocator.dupe(u8, self.readQuotedOrBare());
+        self.pos += indent;
+        // Use readQuotedOrBare for the key so that quoted names like
+        // `"@types/yargs"` have their surrounding quotes stripped.
+        const key = try self.allocator.dupe(u8, self.readQuotedOrBare());
+        self.skipInlineWhitespace();
+        const val = try self.allocator.dupe(u8, self.readQuotedOrBare());
             try map.put(self.allocator, key, val);
             self.skipToEndOfLine();
         }

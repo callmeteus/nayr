@@ -57,7 +57,8 @@ pub const Format = enum {
 /// according to the selected Format.
 pub const Event = union(enum) {
     /// Resolution phase progress: N of M packages resolved from registry.
-    resolve_progress: struct { resolved: u32, total: u32 },
+    /// `name` is the package just resolved (empty string = unknown).
+    resolve_progress: struct { resolved: u32, total: u32, name: []const u8 = "" },
 
     /// Fetch phase progress: N tarballs downloaded, at the given byte rate.
     fetch_progress: struct { fetched: u32, total: u32, bytes_per_sec: u64 },
@@ -170,12 +171,20 @@ pub fn createWriter(allocator: std.mem.Allocator, format: Format, verbose: bool)
 // TUI writer
 // ============================================================================
 
+/// Braille spinner frames (10-frame cycle).
+const SPINNER = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
+
 const TuiWriter = struct {
     allocator: std.mem.Allocator,
     verbose: bool,
     stdout: std.fs.File,
     /// Whether ANSI colour codes should be emitted.
     colour: bool,
+    /// Current spinner frame (advances on each progress event).
+    spinner_frame: u8 = 0,
+    /// True when the last line written was a \r progress line that may need
+    /// to be cleared before writing a regular (newline-terminated) event.
+    on_progress_line: bool = false,
 
     const vtable = Writer.VTable{
         .emit = emit,
@@ -193,48 +202,79 @@ const TuiWriter = struct {
         };
     }
 
+    /// Clears the current progress line before printing regular output.
+    /// No-op when not on a progress line.
+    fn clearProgress(self: *TuiWriter) void {
+        if (!self.on_progress_line) return;
+        const w = self.stdout.writer();
+        if (self.colour) {
+            // ANSI: erase entire line, then carriage-return.
+            w.writeAll("\x1b[2K\r") catch {};
+        } else {
+            w.writeByte('\n') catch {};
+        }
+        self.on_progress_line = false;
+    }
+
     fn emit(ptr: *anyopaque, event: Event) void {
         const self: *TuiWriter = @ptrCast(@alignCast(ptr));
         const w = self.stdout.writer();
         switch (event) {
             .resolve_progress => |p| {
-                w.print("\r{s}  resolving{s}  {d}/{d}   ", .{
-                    if (self.colour) "\x1b[36m" else "",
-                    if (self.colour) "\x1b[0m" else "",
-                    p.resolved,
-                    p.total,
-                }) catch {};
+                const frame = SPINNER[self.spinner_frame % SPINNER.len];
+                self.spinner_frame +%= 1;
+
+                if (self.colour) {
+                    if (p.name.len > 0) {
+                        // Trim long names to keep the line short.
+                        const max_name = 35;
+                        const display_name = if (p.name.len > max_name) p.name[0..max_name] else p.name;
+                        w.print("\x1b[2K\r\x1b[36m {s}\x1b[0m  resolving  \x1b[1m{d}\x1b[0m packages  \x1b[2m{s}\x1b[0m", .{
+                            frame, p.resolved, display_name,
+                        }) catch {};
+                    } else {
+                        w.print("\x1b[2K\r\x1b[36m {s}\x1b[0m  resolving  \x1b[1m{d}\x1b[0m packages", .{
+                            frame, p.resolved,
+                        }) catch {};
+                    }
+                } else {
+                    w.print("\rresolving {d} packages", .{p.resolved}) catch {};
+                }
+                self.on_progress_line = true;
             },
             .fetch_progress => |p| {
-                if (p.bytes_per_sec > 0) {
-                    const mbps = @as(f64, @floatFromInt(p.bytes_per_sec)) / (1024.0 * 1024.0);
-                    w.print("\r{s}  fetching{s}   {d}/{d}  {s}({d:.1} MB/s){s}  ", .{
-                        if (self.colour) "\x1b[32m" else "",
-                        if (self.colour) "\x1b[0m" else "",
-                        p.fetched,
-                        p.total,
-                        if (self.colour) "\x1b[2m" else "",
-                        mbps,
-                        if (self.colour) "\x1b[0m" else "",
-                    }) catch {};
+                const frame = SPINNER[self.spinner_frame % SPINNER.len];
+                self.spinner_frame +%= 1;
+                if (self.colour) {
+                    if (p.bytes_per_sec > 0) {
+                        const mbps = @as(f64, @floatFromInt(p.bytes_per_sec)) / (1024.0 * 1024.0);
+                        w.print("\x1b[2K\r\x1b[32m {s}\x1b[0m  fetching   \x1b[1m{d}/{d}\x1b[0m  \x1b[2m{d:.1} MB/s\x1b[0m", .{
+                            frame, p.fetched, p.total, mbps,
+                        }) catch {};
+                    } else {
+                        w.print("\x1b[2K\r\x1b[32m {s}\x1b[0m  fetching   \x1b[1m{d}/{d}\x1b[0m", .{
+                            frame, p.fetched, p.total,
+                        }) catch {};
+                    }
                 } else {
-                    w.print("\r{s}  fetching{s}   {d}/{d}  ", .{
-                        if (self.colour) "\x1b[32m" else "",
-                        if (self.colour) "\x1b[0m" else "",
-                        p.fetched,
-                        p.total,
-                    }) catch {};
+                    w.print("\rfetching {d}/{d}", .{ p.fetched, p.total }) catch {};
                 }
+                self.on_progress_line = true;
             },
             .link_progress => |p| {
-                w.print("\r{s}  linking{s}    {d}/{d}  ", .{
-                    if (self.colour) "\x1b[35m" else "",
-                    if (self.colour) "\x1b[0m" else "",
-                    p.linked,
-                    p.total,
-                }) catch {};
+                const frame = SPINNER[self.spinner_frame % SPINNER.len];
+                self.spinner_frame +%= 1;
+                if (self.colour) {
+                    w.print("\x1b[2K\r\x1b[35m {s}\x1b[0m  linking    \x1b[1m{d}/{d}\x1b[0m", .{
+                        frame, p.linked, p.total,
+                    }) catch {};
+                } else {
+                    w.print("\rlinking {d}/{d}", .{ p.linked, p.total }) catch {};
+                }
+                self.on_progress_line = true;
             },
             .info => |msg| {
+                self.clearProgress();
                 w.print("{s}  info{s}  {s}\n", .{
                     if (self.colour) "\x1b[2m" else "",
                     if (self.colour) "\x1b[0m" else "",
@@ -242,6 +282,7 @@ const TuiWriter = struct {
                 }) catch {};
             },
             .warning => |msg| {
+                self.clearProgress();
                 w.print("{s}  warn{s}  {s}\n", .{
                     if (self.colour) "\x1b[33m" else "",
                     if (self.colour) "\x1b[0m" else "",
@@ -249,6 +290,7 @@ const TuiWriter = struct {
                 }) catch {};
             },
             .err => |msg| {
+                self.clearProgress();
                 const stderr = std.io.getStdErr().writer();
                 stderr.print("{s}  error{s} {s}\n", .{
                     if (self.colour) "\x1b[1;31m" else "",
@@ -257,17 +299,18 @@ const TuiWriter = struct {
                 }) catch {};
             },
             .done => |d| {
+                self.clearProgress();
                 const secs = @as(f64, @floatFromInt(d.elapsed_ms)) / 1000.0;
-                w.print("{s}  done{s}  {s} {s}({d:.2}s){s}\n", .{
-                    if (self.colour) "\x1b[32m" else "",
-                    if (self.colour) "\x1b[0m" else "",
-                    d.summary,
-                    if (self.colour) "\x1b[2m" else "",
-                    secs,
-                    if (self.colour) "\x1b[0m" else "",
-                }) catch {};
+                if (self.colour) {
+                    w.print("\x1b[32m  ✔\x1b[0m  {s}  \x1b[2m({d:.2}s)\x1b[0m\n", .{
+                        d.summary, secs,
+                    }) catch {};
+                } else {
+                    w.print("  done  {s} ({d:.2}s)\n", .{ d.summary, secs }) catch {};
+                }
             },
             .table_row => |row| {
+                self.clearProgress();
                 for (row.columns, 0..) |col, i| {
                     if (i > 0) w.print("  ", .{}) catch {};
                     w.print("{s}", .{col}) catch {};
@@ -275,21 +318,25 @@ const TuiWriter = struct {
                 w.print("\n", .{}) catch {};
             },
             .tree_node => |node| {
+                self.clearProgress();
                 var i: u8 = 0;
                 while (i < node.depth) : (i += 1) w.print("  ", .{}) catch {};
                 w.print("└─ {s}\n", .{node.label}) catch {};
             },
             .package_resolved => |p| {
                 if (self.verbose) {
+                    self.clearProgress();
                     w.print("  resolved {s}@{s}\n", .{ p.name, p.version }) catch {};
                 }
             },
             .cache_hit => |p| {
                 if (self.verbose) {
+                    self.clearProgress();
                     w.print("  cache hit {s}@{s}\n", .{ p.name, p.version }) catch {};
                 }
             },
             .script_start => |s| {
+                self.clearProgress();
                 w.print("  $ {s} [{s}]\n", .{ s.script, s.name }) catch {};
             },
         }
@@ -297,11 +344,13 @@ const TuiWriter = struct {
 
     fn flush(ptr: *anyopaque) void {
         const self: *TuiWriter = @ptrCast(@alignCast(ptr));
+        self.clearProgress();
         self.stdout.sync() catch {};
     }
 
     fn deinitFn(ptr: *anyopaque) void {
         const self: *TuiWriter = @ptrCast(@alignCast(ptr));
+        self.clearProgress();
         self.allocator.destroy(self);
     }
 };
@@ -329,12 +378,20 @@ const TextWriter = struct {
         const self: *TextWriter = @ptrCast(@alignCast(ptr));
         const w = self.stdout.writer();
         switch (event) {
-            .resolve_progress => |p| w.print("[resolve] {d}/{d} packages\n", .{ p.resolved, p.total }) catch {},
-            .fetch_progress => |p| {
-                const mbps = @as(f64, @floatFromInt(p.bytes_per_sec)) / (1024.0 * 1024.0);
-                w.print("[fetch] {d}/{d} packages ({d:.1} MB/s)\n", .{ p.fetched, p.total, mbps }) catch {};
+            // Progress events are only shown in verbose mode for the text
+            // writer; the TUI writer handles them with a live spinner line.
+            .resolve_progress => |p| {
+                if (self.verbose) w.print("[resolve] {d}/{d} packages\n", .{ p.resolved, p.total }) catch {};
             },
-            .link_progress => |p| w.print("[link] {d}/{d} packages\n", .{ p.linked, p.total }) catch {},
+            .fetch_progress => |p| {
+                if (self.verbose) {
+                    const mbps = @as(f64, @floatFromInt(p.bytes_per_sec)) / (1024.0 * 1024.0);
+                    w.print("[fetch] {d}/{d} packages ({d:.1} MB/s)\n", .{ p.fetched, p.total, mbps }) catch {};
+                }
+            },
+            .link_progress => |p| {
+                if (self.verbose) w.print("[link] {d}/{d} packages\n", .{ p.linked, p.total }) catch {};
+            },
             .info => |msg| w.print("[info] {s}\n", .{msg}) catch {},
             .warning => |msg| w.print("[warn] {s}\n", .{msg}) catch {},
             .err => |msg| std.io.getStdErr().writer().print("[error] {s}\n", .{msg}) catch {},

@@ -59,7 +59,10 @@ pub fn discover(allocator: std.mem.Allocator, root_dir: []const u8) ![]Workspace
 
     for (globs) |glob| {
         const matches = try fs_util.globExpand(allocator, root_dir, glob);
-        defer allocator.free(matches);
+        defer {
+            for (matches) |m| allocator.free(m);
+            allocator.free(matches);
+        }
 
         for (matches) |match_path| {
             const pkg_json_path = try std.fs.path.join(allocator, &.{ match_path, "package.json" });

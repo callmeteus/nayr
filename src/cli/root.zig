@@ -154,6 +154,10 @@ pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !void {
     } else if (std.mem.eql(u8, cmd, "run")) {
         // `nayr run <script>` - run a script from package.json.
         try runScript(allocator, cmd_args, opts.cwd, writer);
+    } else if (cmd.len > 2 and std.mem.startsWith(u8, cmd, "--")) {
+        // Yarn Classic behaviour: bare flags with no command default to install.
+        // e.g. `nayr --force`, `nayr --frozen-lockfile`, `nayr --production`.
+        try install_cmd.run(allocator, remaining, opts.cwd, &config, writer);
     } else {
         // Unknown command - treat as a script name (Yarn Classic behaviour:
         // `yarn build` runs the "build" script from package.json).

@@ -29,6 +29,7 @@ const registry_client = @import("../registry/client.zig");
 const config_types = @import("../config/types.zig");
 const ws_discovery = @import("../workspace/discovery.zig");
 const ws_resolver = @import("../workspace/resolver.zig");
+const output = @import("../util/output.zig");
 const PackageJson = json_util.PackageJson;
 const Lockfile = lockfile_types.Lockfile;
 const Config = config_types.Config;
@@ -131,11 +132,13 @@ pub const ResolverOptions = struct {
 /// - `root_dir`: Absolute path to the project root.
 /// - `config`: Merged configuration (registries, auth, git settings).
 /// - `opts`: Resolution options.
+/// - `writer`: Output event sink for progress reporting.
 pub fn resolve(
     allocator: std.mem.Allocator,
     root_dir: []const u8,
     config: *const Config,
     opts: ResolverOptions,
+    writer: output.Writer,
 ) !ResolutionResult {
     // --- Load existing lockfile ---
     const nayr_lock_path = try std.fs.path.join(allocator, &.{ root_dir, "nayr.lock" });
@@ -227,6 +230,11 @@ pub fn resolve(
             };
             const key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ rp.name, rp.version });
             try resolved_set.put(allocator, key, rp);
+            writer.emit(.{ .resolve_progress = .{
+                .resolved = @intCast(resolved_set.count()),
+                .total = @intCast(queue.items.len),
+                .name = req.name,
+            } });
             continue;
         }
 
@@ -236,12 +244,21 @@ pub fn resolve(
         if (!opts.force) {
             if (existing_lock.get(lock_key)) |entry| {
                 if (semver.satisfies(allocator, entry.version, effective_range)) {
-                    const rp = try resolvedFromLockEntry(allocator, req.name, entry, config);
-                    const key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ rp.name, rp.version });
-                    try resolved_set.put(allocator, key, rp);
-                    // Enqueue transitive deps.
+                    const map_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ req.name, entry.version });
+                    if (resolved_set.contains(map_key)) {
+                        allocator.free(map_key);
+                    } else {
+                        const rp = try resolvedFromLockEntry(allocator, req.name, entry, config);
+                        try resolved_set.put(allocator, map_key, rp);
+                    }
+                    // Always enqueue transitive deps (even on duplicate).
                     try enqueueMapDeps(allocator, &queue, &entry.dependencies, false);
                     try enqueueMapDeps(allocator, &queue, &entry.optional_dependencies, opts.ignore_optional);
+                    writer.emit(.{ .resolve_progress = .{
+                        .resolved = @intCast(resolved_set.count()),
+                        .total = @intCast(queue.items.len),
+                        .name = req.name,
+                    } });
                     continue;
                 }
             }
@@ -252,7 +269,17 @@ pub fn resolve(
             if (opts.frozen_lockfile) return error.FrozenLockfileChanged;
             const rp = try resolveGitDep(allocator, req.name, effective_range, config);
             const key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ rp.name, rp.version });
-            try resolved_set.put(allocator, key, rp);
+            if (resolved_set.contains(key)) {
+                allocator.free(key);
+                freeResolvedPackage(allocator, rp);
+            } else {
+                try resolved_set.put(allocator, key, rp);
+            }
+            writer.emit(.{ .resolve_progress = .{
+                .resolved = @intCast(resolved_set.count()),
+                .total = @intCast(queue.items.len),
+                .name = req.name,
+            } });
             continue;
         }
 
@@ -261,6 +288,12 @@ pub fn resolve(
 
         const meta = client.fetchMetadata(req.name) catch |err| {
             if (req.optional) continue; // optional dep - skip on failure
+            // Print the package name so the user knows which package failed.
+            // The URL and curl error have already been printed by the client.
+            std.io.getStdErr().writer().print(
+                "  warn  failed to resolve package: {s}\n",
+                .{req.name},
+            ) catch {};
             return err;
         };
         defer {
@@ -277,10 +310,25 @@ pub fn resolve(
         const latest = meta.dist_tags.get("latest");
         const best_ver = semver.maxSatisfying(allocator, version_strs.items, effective_range, latest) orelse {
             if (req.optional) continue;
+            std.io.getStdErr().writer().print(
+                "  warn  no version of {s} satisfies range \"{s}\"\n",
+                .{ req.name, effective_range },
+            ) catch {};
             return error.NoMatchingVersion;
         };
 
         const ver_info = meta.versions.get(best_ver).?;
+
+        // Allocate the map key before building rp; skip entirely if already
+        // resolved (multiple dep ranges resolving to the same name@version).
+        const key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ req.name, ver_info.version });
+        if (resolved_set.contains(key)) {
+            allocator.free(key);
+            try enqueueMapDeps(allocator, &queue, &ver_info.dependencies, false);
+            try enqueueMapDeps(allocator, &queue, &ver_info.optional_dependencies, opts.ignore_optional);
+            continue;
+        }
+
         const rp = ResolvedPackage{
             .name = try allocator.dupe(u8, req.name),
             .version = try allocator.dupe(u8, ver_info.version),
@@ -293,12 +341,18 @@ pub fn resolve(
             .optional_dependencies = .{},
         };
 
-        const key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ rp.name, rp.version });
+        // key is now consumed by resolved_set (no free here).
         try resolved_set.put(allocator, key, rp);
 
         // Enqueue transitive deps.
         try enqueueMapDeps(allocator, &queue, &ver_info.dependencies, false);
         try enqueueMapDeps(allocator, &queue, &ver_info.optional_dependencies, opts.ignore_optional);
+
+        writer.emit(.{ .resolve_progress = .{
+            .resolved = @intCast(resolved_set.count()),
+            .total = @intCast(queue.items.len),
+            .name = rp.name,
+        } });
     }
 
     // Free queue items (names and ranges were duped during enqueue).
@@ -378,6 +432,17 @@ fn enqueueDeps(
     }
 }
 
+/// Frees a `ResolvedPackage` that was never inserted into `resolved_set`
+/// (e.g. a duplicate that was discarded after the key check).
+fn freeResolvedPackage(allocator: std.mem.Allocator, pkg: ResolvedPackage) void {
+    allocator.free(pkg.name);
+    allocator.free(pkg.version);
+    if (pkg.tarball_url.len > 0) allocator.free(pkg.tarball_url);
+    if (pkg.integrity.len > 0) allocator.free(pkg.integrity);
+    if (pkg.registry.len > 0) allocator.free(pkg.registry);
+    // deps maps are empty at construction time for git/lockfile packages.
+}
+
 fn enqueueMapDeps(
     allocator: std.mem.Allocator,
     queue: *std.ArrayList(DepRequest),
@@ -442,6 +507,7 @@ fn resolveGitDep(
     if (should_pin) {
         head_hash = resolveGitHash(allocator, url) catch "";
     }
+    defer if (head_hash.len > 0) allocator.free(head_hash);
 
     // The "version" for a git dep is the commit hash (when pinned) or "HEAD".
     const version = if (head_hash.len > 0)

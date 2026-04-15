@@ -96,15 +96,24 @@ pub fn run(
     }
 
     // --- Phase 1: Resolve ---
-    writer.emit(.{ .info = "Resolving dependencies..." });
     const res_opts = resolver_mod.ResolverOptions{
         .frozen_lockfile = opts.frozen_lockfile,
         .production = opts.production,
         .ignore_optional = opts.ignore_optional,
         .force = opts.force,
     };
-    var resolution = try resolver_mod.resolve(allocator, cwd, config, res_opts);
+    var resolution = try resolver_mod.resolve(allocator, cwd, config, res_opts, writer);
     defer resolution.deinit();
+
+    // Print resolved summary (also clears the spinner line).
+    {
+        const n = resolution.packages.count();
+        const msg = try std.fmt.allocPrint(allocator, "Resolved {d} package{s}", .{
+            n, if (n == 1) "" else "s",
+        });
+        defer allocator.free(msg);
+        writer.emit(.{ .info = msg });
+    }
 
     // --- Phase 2: Fetch ---
     const cache_dir = try platform.getCacheDir(allocator);

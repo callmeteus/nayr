@@ -38,9 +38,9 @@ pub fn main() !void {
             error.FrozenLockfileChanged =>
                 "--frozen-lockfile is set but the lockfile would need to be updated.",
             error.NetworkError =>
-                "Network request failed. Check your internet connection and registry URL.",
+                "Network request failed. Check your internet connection and registry URL.\n       (hint: run with --verbose for more details)",
             error.HttpError =>
-                "The registry returned an HTTP error (4xx/5xx). Check the package name and registry URL.",
+                "Registry returned an HTTP error — see the warning above for the URL and status.\n       Common causes: wrong registry, missing auth token, or package does not exist.",
             error.OutOfMemory =>
                 "Out of memory.",
             error.AccessDenied =>
