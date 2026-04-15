@@ -80,12 +80,19 @@ fn applyKey(config: *Config, key: []const u8, val: []const u8, overwrite: bool) 
         }
     } else if (std.mem.eql(u8, key, "cache-folder")) {
         if (overwrite or config.cache_folder == null) {
+            if (overwrite) if (config.cache_folder) |s| config.allocator.free(s);
             config.cache_folder = try config.allocator.dupe(u8, val);
         }
     } else if (std.mem.eql(u8, key, "email")) {
-        if (overwrite or config.email == null) config.email = try config.allocator.dupe(u8, val);
+        if (overwrite or config.email == null) {
+            if (overwrite) if (config.email) |s| config.allocator.free(s);
+            config.email = try config.allocator.dupe(u8, val);
+        }
     } else if (std.mem.eql(u8, key, "username")) {
-        if (overwrite or config.username == null) config.username = try config.allocator.dupe(u8, val);
+        if (overwrite or config.username == null) {
+            if (overwrite) if (config.username) |s| config.allocator.free(s);
+            config.username = try config.allocator.dupe(u8, val);
+        }
     }
 }
 

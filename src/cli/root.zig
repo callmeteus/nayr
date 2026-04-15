@@ -30,6 +30,7 @@ const workspace_cmd = @import("workspace.zig");
 const registry_cmd = @import("registry_cmd.zig");
 const login_cmd = @import("login.zig");
 const publish_cmd = @import("publish.zig");
+const global_cmd = @import("global.zig");
 
 /// nayr version string - embedded from package.json at build time.
 pub const VERSION = build_options.version;
@@ -117,10 +118,25 @@ pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     if (std.mem.eql(u8, cmd, "install") or std.mem.eql(u8, cmd, "i")) {
         try install_cmd.run(allocator, cmd_args, opts.cwd, &config, writer);
+    } else if (std.mem.eql(u8, cmd, "global") or std.mem.eql(u8, cmd, "g")) {
+        try global_cmd.run(allocator, cmd_args, opts.cwd, &config, writer);
     } else if (std.mem.eql(u8, cmd, "add")) {
-        try add_cmd.run(allocator, cmd_args, opts.cwd, &config, writer);
+        // `nayr add --global pkg` / `nayr add -G pkg` redirect to global add.
+        if (hasGlobalFlag(cmd_args)) {
+            const stripped = try stripGlobalFlag(allocator, cmd_args);
+            defer allocator.free(stripped);
+            try global_cmd.runAdd(allocator, stripped, &config, writer);
+        } else {
+            try add_cmd.run(allocator, cmd_args, opts.cwd, &config, writer);
+        }
     } else if (std.mem.eql(u8, cmd, "remove") or std.mem.eql(u8, cmd, "rm")) {
-        try remove_cmd.run(allocator, cmd_args, opts.cwd, &config, writer);
+        if (hasGlobalFlag(cmd_args)) {
+            const stripped = try stripGlobalFlag(allocator, cmd_args);
+            defer allocator.free(stripped);
+            try global_cmd.runRemove(allocator, stripped, &config, writer);
+        } else {
+            try remove_cmd.run(allocator, cmd_args, opts.cwd, &config, writer);
+        }
     } else if (std.mem.eql(u8, cmd, "upgrade") or std.mem.eql(u8, cmd, "up")) {
         try upgrade_cmd.run(allocator, cmd_args, opts.cwd, &config, writer);
     } else if (std.mem.eql(u8, cmd, "audit")) {
@@ -333,6 +349,25 @@ fn defaultGlobalOpts(allocator: std.mem.Allocator) GlobalOptions {
     };
 }
 
+/// Returns true if args contains `--global` or `-G`.
+fn hasGlobalFlag(args: []const []const u8) bool {
+    for (args) |a| {
+        if (std.mem.eql(u8, a, "--global") or std.mem.eql(u8, a, "-G")) return true;
+    }
+    return false;
+}
+
+/// Returns a copy of args with `--global` / `-G` removed.
+fn stripGlobalFlag(allocator: std.mem.Allocator, args: []const []const u8) ![]const []const u8 {
+    var out = std.ArrayList([]const u8).init(allocator);
+    for (args) |a| {
+        if (!std.mem.eql(u8, a, "--global") and !std.mem.eql(u8, a, "-G")) {
+            try out.append(a);
+        }
+    }
+    return out.toOwnedSlice();
+}
+
 fn printHelp() void {
     const w = std.io.getStdOut().writer();
     const c = output.hasTtyStderr();
@@ -380,8 +415,13 @@ fn printHelp() void {
         .{ .name = "logout",          .desc = "Remove stored credentials" },
         .{ .name = "publish",         .desc = "Publish the current package" },
         .{ .name = "pack",            .desc = "Create a tarball without publishing" },
-        .{ .name = "cache list",      .desc = "List cached packages" },
-        .{ .name = "cache clean",     .desc = "Remove all cached packages" },
+        .{ .name = "cache list",           .desc = "List cached packages" },
+        .{ .name = "cache clean",          .desc = "Remove all cached packages" },
+        .{ .name = "global add <pkg...>",  .desc = "Install packages globally" },
+        .{ .name = "global remove <pkg>",  .desc = "Remove a global package" },
+        .{ .name = "global list",          .desc = "List globally installed packages" },
+        .{ .name = "global bin",           .desc = "Print the global binary directory" },
+        .{ .name = "global upgrade",       .desc = "Upgrade all global packages" },
     };
     for (cmds) |cmd| {
         w.print("  {s}{s:<26}{s}{s}{s}{s}\n", .{
@@ -399,6 +439,7 @@ fn printHelp() void {
         .{ .flag = "--silent   / -s",        .desc = "Suppress all output except errors" },
         .{ .flag = "--no-color",             .desc = "Disable ANSI colours" },
         .{ .flag = "--cwd <path>",           .desc = "Set working directory" },
+        .{ .flag = "--global   / -G",        .desc = "Apply to global packages (add/remove)" },
         .{ .flag = "--version",              .desc = "Print version and exit" },
         .{ .flag = "--help     / -h",        .desc = "Print this help" },
     };

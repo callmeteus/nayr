@@ -62,6 +62,34 @@ pub fn getConfigDir(allocator: std.mem.Allocator) ![]const u8 {
     return std.fs.path.join(allocator, &.{ home, ".nayr" });
 }
 
+/// Returns the global nayr package installation directory.
+///
+/// This is the "home" of globally installed packages - equivalent to
+/// `yarn global dir`.  nayr maintains a `package.json` here that records
+/// which packages the user has installed globally, plus a standard
+/// `node_modules/` tree populated by `nayr install`.
+///
+/// Linux/macOS: `~/.nayr/global`
+/// Windows:     `%APPDATA%\nayr\global`
+pub fn getGlobalDir(allocator: std.mem.Allocator) ![]const u8 {
+    const config = try getConfigDir(allocator);
+    defer allocator.free(config);
+    return std.fs.path.join(allocator, &.{ config, "global" });
+}
+
+/// Returns the directory where global binary stubs are written.
+///
+/// After `nayr global add <pkg>`, nayr symlinks every binary declared in the
+/// package's `bin` field into this directory.  Users should add it to PATH.
+///
+/// Linux/macOS: `~/.nayr/bin`
+/// Windows:     `%APPDATA%\nayr\bin`
+pub fn getGlobalBinDir(allocator: std.mem.Allocator) ![]const u8 {
+    const config = try getConfigDir(allocator);
+    defer allocator.free(config);
+    return std.fs.path.join(allocator, &.{ config, "bin" });
+}
+
 /// Returns the global nayr links registry directory.
 ///
 /// Linux/macOS: `~/.nayr/links`

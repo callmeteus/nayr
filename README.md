@@ -120,6 +120,29 @@ nayr unlink my-package     # remove a specific registration
 nayr autolink              # auto-link all registered packages
 ```
 
+### Global packages
+
+```sh
+nayr global add typescript        # install a package globally
+nayr global add typescript@5      # install a specific version
+nayr add --global typescript      # same, using the --global / -G flag
+nayr add -G typescript            # shorthand
+
+nayr global remove typescript     # remove a global package
+nayr remove -G typescript         # same via flag
+
+nayr global list                  # list installed global packages
+nayr global upgrade               # upgrade all global packages to latest
+nayr global bin                   # print the global binary directory (~/.nayr/bin)
+nayr global dir                   # print the global package directory (~/.nayr/global)
+```
+
+Binaries are symlinked into `~/.nayr/bin/`. Add it to PATH once:
+
+```sh
+export PATH="$HOME/.nayr/bin:$PATH"   # add to ~/.bashrc or ~/.zshrc
+```
+
 ### Registry
 
 ```sh

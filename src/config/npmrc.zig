@@ -65,6 +65,10 @@ fn applyKey(config: *Config, key: []const u8, val: []const u8, overwrite: bool) 
     // Default registry.
     if (std.mem.eql(u8, key, "registry")) {
         if (overwrite or std.mem.eql(u8, config.registry, "https://registry.npmjs.org")) {
+            const default_registry = "https://registry.npmjs.org";
+            if (!std.mem.eql(u8, config.registry, default_registry)) {
+                config.allocator.free(config.registry);
+            }
             config.registry = try config.allocator.dupe(u8, val);
         }
         return;
@@ -74,6 +78,12 @@ fn applyKey(config: *Config, key: []const u8, val: []const u8, overwrite: bool) 
     if (std.mem.endsWith(u8, key, ":registry")) {
         const scope = key[0 .. key.len - ":registry".len];
         if (overwrite or !config.scoped_registries.contains(scope)) {
+            // Free old key+value before overwriting so we don't leak when the
+            // same file is parsed twice (e.g. ~/.npmrc as both user and project).
+            if (config.scoped_registries.fetchRemove(scope)) |old| {
+                config.allocator.free(old.key);
+                config.allocator.free(old.value);
+            }
             const scope_dup = try config.allocator.dupe(u8, scope);
             const val_dup = try config.allocator.dupe(u8, val);
             try config.scoped_registries.put(config.allocator, scope_dup, val_dup);

@@ -141,6 +141,7 @@ const NayrrcParser = struct {
 
         if (std.mem.eql(u8, key, "url")) {
             if (overwrite or self.current_registry.?.url.len == 0) {
+                if (self.current_registry.?.url.len > 0) self.allocator.free(self.current_registry.?.url);
                 self.current_registry.?.url = try self.allocator.dupe(u8, val);
             }
         } else if (std.mem.eql(u8, key, "type")) {
@@ -152,9 +153,14 @@ const NayrrcParser = struct {
         } else if (std.mem.eql(u8, key, "auto-sync")) {
             self.current_registry.?.auto_sync = std.mem.eql(u8, val, "true");
         } else if (std.mem.eql(u8, key, "auth-token-env")) {
+            if (self.current_registry.?.auth_token_env) |old| self.allocator.free(old);
             self.current_registry.?.auth_token_env = try self.allocator.dupe(u8, val);
         } else if (std.mem.eql(u8, key, "scopes")) {
             // Parse an inline array: `scopes = ["@lemon", "@luckymaker"]`
+            if (self.current_registry.?.scopes.len > 0) {
+                for (self.current_registry.?.scopes) |s| self.allocator.free(s);
+                self.allocator.free(self.current_registry.?.scopes);
+            }
             self.current_registry.?.scopes = try parseStringArray(self.allocator, val);
         }
 
@@ -186,10 +192,18 @@ fn applyGitKey(
         if (overwrite) config.git_pin_hash = std.mem.eql(u8, val, "true");
     } else if (std.mem.eql(u8, key, "no-pin-orgs")) {
         if (overwrite or config.git_no_pin_orgs.len == 0) {
+            if (config.git_no_pin_orgs.len > 0) {
+                for (config.git_no_pin_orgs) |s| allocator.free(s);
+                allocator.free(config.git_no_pin_orgs);
+            }
             config.git_no_pin_orgs = try parseStringArray(allocator, val);
         }
     } else if (std.mem.eql(u8, key, "no-pin-repos")) {
         if (overwrite or config.git_no_pin_repos.len == 0) {
+            if (config.git_no_pin_repos.len > 0) {
+                for (config.git_no_pin_repos) |s| allocator.free(s);
+                allocator.free(config.git_no_pin_repos);
+            }
             config.git_no_pin_repos = try parseStringArray(allocator, val);
         }
     }
