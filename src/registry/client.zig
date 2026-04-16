@@ -182,7 +182,10 @@ fn curlGet(
 
     try buildCurlBaseArgs(&argv, auth_token);
     try argv.append("-H");
-    try argv.append("Accept: application/json");
+    // Use the abbreviated packument format: only fields needed for installation
+    // (dist, dependencies, bin, dist-tags).  Much smaller than the full packument
+    // for popular packages like vite or typescript that have hundreds of versions.
+    try argv.append("Accept: application/vnd.npm.install-v1+json");
     try argv.append(url); // URL must be last
 
     const result = try runCapture(allocator, argv.items);
@@ -313,7 +316,7 @@ fn runCapture(allocator: std.mem.Allocator, argv: []const []const u8) !CaptureRe
     // Read stdout first, then stderr. This is safe because curl with --silent
     // writes nothing to stderr on success and only a short error message on
     // failure - the OS pipe buffer (typically 64 KB) is never exhausted.
-    const stdout = try child.stdout.?.reader().readAllAlloc(allocator, 32 * 1024 * 1024);
+    const stdout = try child.stdout.?.reader().readAllAlloc(allocator, 128 * 1024 * 1024);
     errdefer allocator.free(stdout);
 
     const stderr_out = try child.stderr.?.reader().readAllAlloc(allocator, 8 * 1024);
