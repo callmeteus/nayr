@@ -95,6 +95,11 @@ pub fn run(
         }
     }
 
+    // --- Phase 0: Root preinstall ---
+    if (!opts.ignore_scripts and !config.ignore_scripts) {
+        try scripts_mod.runRootPre(allocator, cwd, writer);
+    }
+
     // --- Phase 1: Resolve ---
     const res_opts = resolver_mod.ResolverOptions{
         .frozen_lockfile = opts.frozen_lockfile,
@@ -189,6 +194,7 @@ pub fn run(
     if (!opts.ignore_scripts and !config.ignore_scripts) {
         writer.emit(.{ .info = "Running lifecycle scripts..." });
         try scripts_mod.runAll(allocator, cwd, hoisted, writer);
+        try scripts_mod.runRootPost(allocator, cwd, writer);
     }
 
     // --- Phase 6: Write lockfile ---

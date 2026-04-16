@@ -181,6 +181,22 @@ pub fn createWriter(allocator: std.mem.Allocator, format: Format, verbose: bool)
 /// Braille spinner frames (10-frame cycle).
 const SPINNER = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
 
+/// Width of each progress bar in block characters.
+const BAR_WIDTH = 24;
+
+/// Renders a UTF-8 progress bar of BAR_WIDTH characters.
+/// Filled positions use █ (U+2588), empty ones use ░ (U+2591).
+fn makeBar(done: u32, total: u32) [BAR_WIDTH * 3]u8 {
+    var buf: [BAR_WIDTH * 3]u8 = undefined;
+    const filled: u32 = if (total == 0) 0 else @min(BAR_WIDTH, done * BAR_WIDTH / total);
+    var i: u32 = 0;
+    while (i < BAR_WIDTH) : (i += 1) {
+        const src: *const [3]u8 = if (i < filled) "█" else "░";
+        @memcpy(buf[i * 3 ..][0..3], src);
+    }
+    return buf;
+}
+
 const TuiWriter = struct {
     allocator: std.mem.Allocator,
     verbose: bool,
@@ -189,9 +205,15 @@ const TuiWriter = struct {
     colour: bool,
     /// Current spinner frame (advances on each progress event).
     spinner_frame: u8 = 0,
-    /// True when the last line written was a \r progress line that may need
-    /// to be cleared before writing a regular (newline-terminated) event.
-    on_progress_line: bool = false,
+    /// Number of progress bar lines currently drawn on the terminal (0–2).
+    /// Used to move the cursor back up before re-rendering.
+    progress_lines: u2 = 0,
+    /// Which install phase is active (0 = none, 1–4 = resolve/fetch/link/scripts).
+    current_phase: u8 = 0,
+    /// Items done in the current phase (used to compute the overall bar).
+    phase_done: u32 = 0,
+    /// Total items in the current phase.
+    phase_total: u32 = 0,
 
     const vtable = Writer.VTable{
         .emit = emit,
@@ -204,23 +226,104 @@ const TuiWriter = struct {
             .allocator = allocator,
             .verbose = verbose,
             .stdout = std.io.getStdOut(),
-            // Disable colour when the terminal says NO_COLOR or TERM=dumb.
             .colour = !hasNoColor(),
         };
     }
 
-    /// Clears the current progress line before printing regular output.
-    /// No-op when not on a progress line.
+    /// Clears the progress area and moves the cursor to a clean line so that
+    /// permanent output (info, done, …) can be printed immediately after.
+    ///
+    /// **Key invariant**: when `progress_lines >= 2`, line 2 was written
+    /// WITHOUT a trailing `\n`, so the cursor is still somewhere on that line.
+    /// `\r` brings it to column 0, `\x1b[1A` moves up to line 1, and
+    /// `\x1b[0J` erases everything to end-of-screen — all without causing
+    /// the terminal to scroll.
     fn clearProgress(self: *TuiWriter) void {
-        if (!self.on_progress_line) return;
+        if (self.progress_lines == 0) return;
         const w = self.stdout.writer();
         if (self.colour) {
-            // ANSI: erase entire line, then carriage-return.
-            w.writeAll("\x1b[2K\r") catch {};
+            if (self.progress_lines >= 2) {
+                // Cursor is on line 2 (no trailing \n). Go to col 0, up 1
+                // line, then clear to end-of-screen.
+                w.writeAll("\r\x1b[1A\x1b[0J") catch {};
+            } else {
+                // Single progress line written with \r (no \n).
+                w.writeAll("\r\x1b[0K") catch {};
+            }
         } else {
             w.writeByte('\n') catch {};
         }
-        self.on_progress_line = false;
+        self.progress_lines = 0;
+    }
+
+    /// Renders (or re-renders) the two-line progress display:
+    ///
+    ///   ⠦  <label>   ████████████░░░░░░░░░░░░  <done>/<total>  [<suffix>]
+    ///      overall   ████████░░░░░░░░░░░░░░░░  <pct>%  [<phase>/4]
+    ///
+    /// **Critical**: line 2 is written WITHOUT a trailing `\n` so the cursor
+    /// stays on that line. This prevents the terminal from scrolling, which
+    /// would push the lines into scrollback where `CSI A` can't reach them.
+    /// Redraws use `\r\x1b[1A\x1b[0J` (col 0 → up 1 → clear-to-end), which
+    /// is stable regardless of terminal height or scroll position.
+    fn drawProgress(
+        self: *TuiWriter,
+        phase: u8,
+        label: []const u8,
+        colour_code: []const u8,
+        done: u32,
+        total: u32,
+        suffix: []const u8,
+    ) void {
+        self.current_phase = phase;
+        self.phase_done = done;
+        self.phase_total = total;
+
+        const w = self.stdout.writer();
+
+        if (!self.colour) {
+            w.print("\r{s} {d}/{d}", .{ label, done, total }) catch {};
+            self.progress_lines = 1;
+            return;
+        }
+
+        // Return cursor to the start of the progress area without scrolling.
+        if (self.progress_lines >= 2) {
+            // Cursor is on line 2 (no trailing \n was written there).
+            w.writeAll("\r\x1b[1A\x1b[0J") catch {};
+        } else if (self.progress_lines == 1) {
+            w.writeAll("\r\x1b[0J") catch {};
+        }
+        // progress_lines == 0: cursor is already at the right position.
+
+        const frame = SPINNER[self.spinner_frame % SPINNER.len];
+        self.spinner_frame +%= 1;
+
+        const phase_bar = makeBar(done, total);
+
+        // Overall percentage: each phase contributes 25 points.
+        const overall_pct: u32 = blk: {
+            if (phase == 0) break :blk 0;
+            const within: u32 = if (total == 0) 0 else done * 25 / total;
+            break :blk (@as(u32, phase) - 1) * 25 + within;
+        };
+        const overall_bar = makeBar(overall_pct, 100);
+
+        // ── Line 1: ends with \n to advance to line 2 ────────────────────────
+        w.print("{s}{s}\x1b[0m  {s}  {s}  \x1b[1m{d}/{d}\x1b[0m", .{
+            colour_code, frame, label, phase_bar[0..], done, total,
+        }) catch {};
+        if (suffix.len > 0) {
+            w.print("  \x1b[2m{s}\x1b[0m", .{suffix}) catch {};
+        }
+        w.writeByte('\n') catch {};
+
+        // ── Line 2: NO trailing \n — cursor stays here, no scroll ─────────────
+        w.print("    overall   {s}  \x1b[2m{d}%  [{d}/4]\x1b[0m", .{
+            overall_bar[0..], overall_pct, phase,
+        }) catch {};
+
+        self.progress_lines = 2;
     }
 
     fn emit(ptr: *anyopaque, event: Event) void {
@@ -228,57 +331,20 @@ const TuiWriter = struct {
         const w = self.stdout.writer();
         switch (event) {
             .resolve_progress => |p| {
-                const frame = SPINNER[self.spinner_frame % SPINNER.len];
-                self.spinner_frame +%= 1;
-
-                if (self.colour) {
-                    if (p.name.len > 0) {
-                        // Trim long names to keep the line short.
-                        const max_name = 35;
-                        const display_name = if (p.name.len > max_name) p.name[0..max_name] else p.name;
-                        w.print("\x1b[2K\r\x1b[36m {s}\x1b[0m  resolving  \x1b[1m{d}\x1b[0m packages  \x1b[2m{s}\x1b[0m", .{
-                            frame, p.resolved, display_name,
-                        }) catch {};
-                    } else {
-                        w.print("\x1b[2K\r\x1b[36m {s}\x1b[0m  resolving  \x1b[1m{d}\x1b[0m packages", .{
-                            frame, p.resolved,
-                        }) catch {};
-                    }
-                } else {
-                    w.print("\rresolving {d} packages", .{p.resolved}) catch {};
-                }
-                self.on_progress_line = true;
+                // Trim long names so the line stays compact.
+                const name = if (p.name.len > 35) p.name[0..35] else p.name;
+                self.drawProgress(1, "resolving", "\x1b[36m", p.resolved, p.total, name);
             },
             .fetch_progress => |p| {
-                const frame = SPINNER[self.spinner_frame % SPINNER.len];
-                self.spinner_frame +%= 1;
-                if (self.colour) {
-                    if (p.bytes_per_sec > 0) {
-                        const mbps = @as(f64, @floatFromInt(p.bytes_per_sec)) / (1024.0 * 1024.0);
-                        w.print("\x1b[2K\r\x1b[32m {s}\x1b[0m  fetching   \x1b[1m{d}/{d}\x1b[0m  \x1b[2m{d:.1} MB/s\x1b[0m", .{
-                            frame, p.fetched, p.total, mbps,
-                        }) catch {};
-                    } else {
-                        w.print("\x1b[2K\r\x1b[32m {s}\x1b[0m  fetching   \x1b[1m{d}/{d}\x1b[0m", .{
-                            frame, p.fetched, p.total,
-                        }) catch {};
-                    }
-                } else {
-                    w.print("\rfetching {d}/{d}", .{ p.fetched, p.total }) catch {};
-                }
-                self.on_progress_line = true;
+                var suffix_buf: [24]u8 = undefined;
+                const suffix: []const u8 = if (p.bytes_per_sec > 0) blk: {
+                    const mbps = @as(f64, @floatFromInt(p.bytes_per_sec)) / (1024.0 * 1024.0);
+                    break :blk std.fmt.bufPrint(&suffix_buf, "{d:.1} MB/s", .{mbps}) catch "";
+                } else "";
+                self.drawProgress(2, "fetching ", "\x1b[32m", p.fetched, p.total, suffix);
             },
             .link_progress => |p| {
-                const frame = SPINNER[self.spinner_frame % SPINNER.len];
-                self.spinner_frame +%= 1;
-                if (self.colour) {
-                    w.print("\x1b[2K\r\x1b[35m {s}\x1b[0m  linking    \x1b[1m{d}/{d}\x1b[0m", .{
-                        frame, p.linked, p.total,
-                    }) catch {};
-                } else {
-                    w.print("\rlinking {d}/{d}", .{ p.linked, p.total }) catch {};
-                }
-                self.on_progress_line = true;
+                self.drawProgress(3, "linking  ", "\x1b[35m", p.linked, p.total, "");
             },
             .info => |msg| {
                 self.clearProgress();

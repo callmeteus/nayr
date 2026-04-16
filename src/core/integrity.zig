@@ -66,7 +66,11 @@ pub fn invalidate(allocator: std.mem.Allocator, root_dir: []const u8) void {
 // Internal helpers
 // ============================================================================
 
-/// Computes a SHA256 hash over the lockfile and all package.json files.
+/// Computes a SHA256 hash over the lockfile, all package.json files, and the
+/// sorted list of top-level packages currently present in node_modules.
+///
+/// Including the node_modules listing ensures that manually deleted packages
+/// are detected even when package.json and the lockfile are unchanged.
 fn computeHash(allocator: std.mem.Allocator, root_dir: []const u8) ![]const u8 {
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
 
@@ -91,11 +95,71 @@ fn computeHash(allocator: std.mem.Allocator, root_dir: []const u8) ![]const u8 {
     defer allocator.free(root_pkg);
     hashFile(&hasher, root_pkg);
 
+    // Hash the sorted list of installed package names from node_modules.
+    // This detects deleted packages without reading any file contents -
+    // only directory entries (readdir) are accessed, which is very fast.
+    try hashNodeModulesListing(allocator, &hasher, root_dir);
+
     var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
     hasher.final(&digest);
 
     // Encode as hex string.
     return std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(&digest)});
+}
+
+/// Iterates the top-level node_modules directory and feeds the sorted list of
+/// package names into `hasher`.  Scoped packages (@scope/pkg) are also expanded
+/// one level deeper.  Hidden entries (.bin, .nayr-integrity, etc.) are skipped.
+fn hashNodeModulesListing(
+    allocator: std.mem.Allocator,
+    hasher: *std.crypto.hash.sha2.Sha256,
+    root_dir: []const u8,
+) !void {
+    const nm_path = try std.fs.path.join(allocator, &.{ root_dir, "node_modules" });
+    defer allocator.free(nm_path);
+
+    var nm_dir = std.fs.openDirAbsolute(nm_path, .{ .iterate = true }) catch return;
+    defer nm_dir.close();
+
+    var names = std.ArrayList([]const u8).init(allocator);
+    defer {
+        for (names.items) |n| allocator.free(n);
+        names.deinit();
+    }
+
+    var it = nm_dir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.name[0] == '.') continue;
+        if (entry.kind != .directory and entry.kind != .sym_link) continue;
+
+        if (entry.name[0] == '@') {
+            // Scoped scope directory: expand one level.
+            const scope_path = try std.fs.path.join(allocator, &.{ nm_path, entry.name });
+            defer allocator.free(scope_path);
+            var scope_dir = std.fs.openDirAbsolute(scope_path, .{ .iterate = true }) catch continue;
+            defer scope_dir.close();
+            var sit = scope_dir.iterate();
+            while (try sit.next()) |sub| {
+                if (sub.kind != .directory and sub.kind != .sym_link) continue;
+                try names.append(try std.fmt.allocPrint(allocator, "{s}/{s}", .{ entry.name, sub.name }));
+            }
+            continue;
+        }
+
+        try names.append(try allocator.dupe(u8, entry.name));
+    }
+
+    // Sort for a deterministic hash regardless of filesystem ordering.
+    std.mem.sort([]const u8, names.items, {}, struct {
+        fn lt(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lt);
+
+    for (names.items) |name| {
+        hasher.update(name);
+        hasher.update("\n");
+    }
 }
 
 fn hashFile(hasher: *std.crypto.hash.sha2.Sha256, path: []const u8) void {
