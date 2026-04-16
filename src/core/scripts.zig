@@ -251,18 +251,29 @@ fn buildScriptPath(allocator: std.mem.Allocator, root_dir: []const u8) ![]const 
     return std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ root_bin, sep, existing });
 }
 
-/// Ensures `~/.nayr/shims/yarn` exists as a shell script that delegates to
-/// the current nayr binary.  This lets lifecycle scripts and shebangs that
-/// call `yarn` (e.g. `#!/usr/bin/env yarn`) transparently use nayr instead,
-/// without modifying any project files.
+/// Ensures a `yarn` shim exists inside `~/.nayr/shims/` (Unix) or
+/// `%USERPROFILE%\.nayr\shims\` (Windows) that delegates every call to the
+/// current nayr binary.
 ///
-/// Returns the path to the shims directory.  The caller owns the slice.
-/// On Windows or if the home directory cannot be determined, returns an error
-/// (the caller silently ignores it so scripts still run without the shim).
+/// On Unix  → `yarn`     (POSIX shell script, chmod 755)
+/// On Windows → `yarn.cmd` (batch file, no chmod needed)
+///
+/// This lets lifecycle scripts and shebangs that reference `yarn`
+/// (e.g. `"build": "yarn build"` or `#!/usr/bin/env yarn`) transparently
+/// use nayr instead, without modifying any project file.
+///
+/// Returns the shims directory path.  The caller owns the returned slice.
+/// Errors are silently ignored by the caller so scripts still run even if
+/// the shim cannot be created (e.g. read-only home directory).
 fn ensureYarnShim(allocator: std.mem.Allocator) ![]const u8 {
-    if (@import("builtin").os.tag == .windows) return error.Unsupported;
+    const is_windows = @import("builtin").os.tag == .windows;
 
-    const home = try std.process.getEnvVarOwned(allocator, "HOME");
+    // Prefer HOME; fall back to USERPROFILE on Windows.
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch
+        (if (is_windows)
+            try std.process.getEnvVarOwned(allocator, "USERPROFILE")
+        else
+            return error.NoHome);
     defer allocator.free(home);
 
     const shim_dir = try std.fs.path.join(allocator, &.{ home, ".nayr", "shims" });
@@ -273,25 +284,44 @@ fn ensureYarnShim(allocator: std.mem.Allocator) ![]const u8 {
         else => return err,
     };
 
-    // Resolve the absolute path of the running nayr binary so the shim is
-    // not dependent on nayr being in PATH (it might not be yet).
+    // Resolve the absolute path of the running nayr binary so the shim works
+    // even when nayr is not yet on PATH.
     var self_buf: [4096]u8 = undefined;
     const self_path = try std.fs.selfExePath(&self_buf);
 
-    const shim_path = try std.fs.path.join(allocator, &.{ shim_dir, "yarn" });
-    defer allocator.free(shim_path);
+    if (is_windows) {
+        // Windows: create yarn.cmd so cmd.exe finds it without an extension.
+        // `%*` forwards all arguments; quotes handle spaces in the path.
+        const shim_path = try std.fs.path.join(allocator, &.{ shim_dir, "yarn.cmd" });
+        defer allocator.free(shim_path);
 
-    const content = try std.fmt.allocPrint(
-        allocator,
-        "#!/bin/sh\nexec \"{s}\" \"$@\"\n",
-        .{self_path},
-    );
-    defer allocator.free(content);
+        const content = try std.fmt.allocPrint(
+            allocator,
+            "@echo off\r\n\"{s}\" %*\r\n",
+            .{self_path},
+        );
+        defer allocator.free(content);
 
-    const file = try std.fs.createFileAbsolute(shim_path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(content);
-    try file.chmod(0o755);
+        const file = try std.fs.createFileAbsolute(shim_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll(content);
+    } else {
+        // Unix: POSIX shell script with exec so nayr replaces the shell process.
+        const shim_path = try std.fs.path.join(allocator, &.{ shim_dir, "yarn" });
+        defer allocator.free(shim_path);
+
+        const content = try std.fmt.allocPrint(
+            allocator,
+            "#!/bin/sh\nexec \"{s}\" \"$@\"\n",
+            .{self_path},
+        );
+        defer allocator.free(content);
+
+        const file = try std.fs.createFileAbsolute(shim_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll(content);
+        try file.chmod(0o755);
+    }
 
     return shim_dir;
 }
