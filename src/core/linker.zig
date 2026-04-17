@@ -80,6 +80,15 @@ pub fn link(
                     writer.emit(.{ .info = m });
                 }
             }
+            // Link bin stubs even for workspace/linked packages so that any
+            // executables declared in their package.json#bin are available.
+            try linkBinEntries(allocator, bin_dir, dest, hp.name);
+        } else if (hp.pkg.is_git) {
+            // Git dependency: clone the repository directly into node_modules.
+            // We preserve existing clones to avoid re-cloning on every install
+            // (the integrity check guards re-entry at a higher level).
+            try installGitPackage(allocator, hp.pkg.tarball_url, dest, hp.name, writer);
+            try linkBinEntries(allocator, bin_dir, dest, hp.name);
         } else {
             // Registry package: copy from cache.
             const cache_dir = cache.extractedDir(hp.pkg.registry, hp.name, hp.version) catch continue;
@@ -105,6 +114,87 @@ pub fn link(
 // ============================================================================
 // Internal helpers
 // ============================================================================
+
+/// Installs a git dependency by cloning the repository into `dest`.
+///
+/// Preserves an existing clone to avoid re-cloning on every install run.
+/// The presence of a `.git` subdirectory is used as the "already installed"
+/// sentinel — consistent with how `git clone` leaves the directory.
+///
+/// On failure (git not in PATH, network error, etc.) a warning is emitted
+/// and the function returns without error so the rest of the install continues.
+fn installGitPackage(
+    allocator: std.mem.Allocator,
+    raw_url: []const u8,
+    dest: []const u8,
+    name: []const u8,
+    writer: output.Writer,
+) !void {
+    // Strip the `git+` scheme prefix that npm uses but git CLI does not accept.
+    const url = if (std.mem.startsWith(u8, raw_url, "git+")) raw_url[4..] else raw_url;
+
+    // Skip cloning when the package directory already has a .git folder.
+    // This avoids slow re-clones on every non-force install.
+    const git_marker = try std.fs.path.join(allocator, &.{ dest, ".git" });
+    defer allocator.free(git_marker);
+    const already_cloned = blk: {
+        std.fs.accessAbsolute(git_marker, .{}) catch break :blk false;
+        break :blk true;
+    };
+    if (already_cloned) return;
+
+    // Remove any partial previous clone before starting fresh.
+    std.fs.deleteTreeAbsolute(dest) catch {};
+    fs_util.mkdirParents(allocator, dest) catch {};
+
+    const msg = try std.fmt.allocPrint(allocator, "cloning git dep: {s}", .{name});
+    defer allocator.free(msg);
+    writer.emit(.{ .info = msg });
+
+    var child = std.process.Child.init(
+        &[_][]const u8{ "git", "clone", "--depth", "1", "--quiet", url, dest },
+        allocator,
+    );
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Pipe;
+
+    child.spawn() catch |err| {
+        const wmsg = try std.fmt.allocPrint(
+            allocator,
+            "git clone failed for {s}: {s}",
+            .{ name, @errorName(err) },
+        );
+        defer allocator.free(wmsg);
+        writer.emit(.{ .warning = wmsg });
+        return;
+    };
+
+    // Capture stderr in case git prints an error message.
+    const stderr_output = child.stderr.?.reader().readAllAlloc(allocator, 8 * 1024) catch "";
+    defer if (stderr_output.len > 0) allocator.free(stderr_output);
+
+    const result = child.wait() catch return;
+    const exit_code: u8 = switch (result) {
+        .Exited => |c| c,
+        else => 1,
+    };
+
+    if (exit_code != 0) {
+        const wmsg = try std.fmt.allocPrint(
+            allocator,
+            "git clone exited {d} for {s}{s}{s}",
+            .{
+                exit_code,
+                name,
+                if (stderr_output.len > 0) ": " else "",
+                std.mem.trimRight(u8, stderr_output, "\n"),
+            },
+        );
+        defer allocator.free(wmsg);
+        writer.emit(.{ .warning = wmsg });
+    }
+}
 
 /// Copies all files from `src_dir` into `dest_dir` using hardlinks where
 /// possible (same filesystem) or copies otherwise.
