@@ -80,31 +80,31 @@ pub fn writeFile(lockfile: *const Lockfile, path: []const u8, allocator: std.mem
 
             if (entry.dependencies.count() > 0) {
                 try w.writeAll("  dependencies:\n");
-                var it = entry.dependencies.iterator();
-                while (it.next()) |kv| {
-                    try w.print("    {s}: {s}\n", .{ kv.key_ptr.*, kv.value_ptr.* });
-                }
+                try writeSortedMap(w, allocator, &entry.dependencies, "    ");
             }
 
             if (entry.optional_dependencies.count() > 0) {
                 try w.writeAll("  optionalDependencies:\n");
-                var it = entry.optional_dependencies.iterator();
-                while (it.next()) |kv| {
-                    try w.print("    {s}: {s}\n", .{ kv.key_ptr.*, kv.value_ptr.* });
-                }
+                try writeSortedMap(w, allocator, &entry.optional_dependencies, "    ");
             }
 
             try w.writeAll("\n");
         }
 
-        // Workspace section.
+        // Workspace section (sorted for determinism).
         if (lockfile.workspaces.count() > 0) {
             try w.writeAll("__workspaces:\n");
-            var it = lockfile.workspaces.iterator();
-            while (it.next()) |kv| {
-                try w.print("  {s}:\n", .{kv.key_ptr.*});
-                try w.print("    location: {s}\n", .{kv.value_ptr.*.location});
-                try w.print("    version: {s}\n", .{kv.value_ptr.*.version});
+            var ws_keys = try allocator.alloc([]const u8, lockfile.workspaces.count());
+            defer allocator.free(ws_keys);
+            var ws_it = lockfile.workspaces.iterator();
+            var wi: usize = 0;
+            while (ws_it.next()) |kv| : (wi += 1) ws_keys[wi] = kv.key_ptr.*;
+            std.mem.sort([]const u8, ws_keys, {}, strLt);
+            for (ws_keys) |name| {
+                const info = lockfile.workspaces.get(name).?;
+                try w.print("  {s}:\n", .{name});
+                try w.print("    location: {s}\n", .{info.location});
+                try w.print("    version: {s}\n", .{info.version});
             }
         }
     }
@@ -334,8 +334,30 @@ const NayrParser = struct {
 };
 
 // ============================================================================
-// Sorting helper
+// Sorting helpers
 // ============================================================================
+
+fn strLt(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.lessThan(u8, a, b);
+}
+
+/// Writes a `StringHashMapUnmanaged([]const u8)` in sorted key order.
+fn writeSortedMap(
+    w: anytype,
+    allocator: std.mem.Allocator,
+    map: *const std.StringHashMapUnmanaged([]const u8),
+    indent: []const u8,
+) !void {
+    var keys = try allocator.alloc([]const u8, map.count());
+    defer allocator.free(keys);
+    var it = map.iterator();
+    var i: usize = 0;
+    while (it.next()) |kv| : (i += 1) keys[i] = kv.key_ptr.*;
+    std.mem.sort([]const u8, keys, {}, strLt);
+    for (keys) |k| {
+        try w.print("{s}{s}: {s}\n", .{ indent, k, map.get(k).? });
+    }
+}
 
 fn entryLt(_: void, a: *const LockfileEntry, b: *const LockfileEntry) bool {
     const a_pat = if (a.patterns.len > 0) a.patterns[0] else "";
