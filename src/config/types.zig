@@ -100,6 +100,11 @@ pub const Config = struct {
     /// Private registry configurations from `.nayrrc [registry.*]` sections.
     private_registries: std.StringHashMapUnmanaged(RegistryConfig) = .{},
 
+    /// Scope glob patterns from `.nayrrc [links]` that trigger automatic link
+    /// registration when `nayr install` runs inside a matching package.
+    /// E.g. `["@lemon/*", "@luckymaker/*"]`.
+    auto_link_patterns: []const []const u8 = &.{},
+
     /// Email address (from `.yarnrc`).
     email: ?[]const u8 = null,
 
@@ -157,6 +162,10 @@ pub const Config = struct {
         if (self.git_no_pin_orgs.len > 0) self.allocator.free(self.git_no_pin_orgs);
         for (self.git_no_pin_repos) |s| self.allocator.free(s);
         if (self.git_no_pin_repos.len > 0) self.allocator.free(self.git_no_pin_repos);
+
+        // Free auto_link_patterns.
+        for (self.auto_link_patterns) |s| self.allocator.free(s);
+        if (self.auto_link_patterns.len > 0) self.allocator.free(self.auto_link_patterns);
 
         // Free registry URL if it was duped (not the default literal).
         const default_registry = "https://registry.npmjs.org";

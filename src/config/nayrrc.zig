@@ -89,6 +89,8 @@ const NayrrcParser = struct {
             if (trimmed[0] == '[') {
                 // Flush previous registry section before switching.
                 try self.flushRegistry(config);
+                // Free the previous section name if it was heap-allocated.
+                if (self.current_section.len > 0) self.allocator.free(self.current_section);
                 self.current_section = try self.parseSection(trimmed);
                 continue;
             }
@@ -102,10 +104,15 @@ const NayrrcParser = struct {
                 try self.applyRegistryKey(config, reg_name, key, raw_val, overwrite);
             } else if (std.mem.eql(u8, self.current_section, "git")) {
                 try applyGitKey(config, key, raw_val, overwrite, self.allocator);
+            } else if (std.mem.eql(u8, self.current_section, "links")) {
+                try applyLinksKey(config, key, raw_val, overwrite, self.allocator);
             }
         }
         // Flush final registry section.
         try self.flushRegistry(config);
+        // Free the last section name.
+        if (self.current_section.len > 0) self.allocator.free(self.current_section);
+        self.current_section = "";
     }
 
     fn readLine(self: *NayrrcParser) []const u8 {
@@ -207,6 +214,42 @@ fn applyGitKey(
             config.git_no_pin_repos = try parseStringArray(allocator, val);
         }
     }
+}
+
+// ============================================================================
+// Links section handler
+// ============================================================================
+
+fn applyLinksKey(
+    config: *Config,
+    key: []const u8,
+    raw_val: []const u8,
+    overwrite: bool,
+    allocator: std.mem.Allocator,
+) !void {
+    _ = overwrite;
+    // Each key is a glob pattern like "@lemon/*" or "@luckymaker/*".
+    // The value is expected to be "true" (the only meaningful value for now).
+    // We append the pattern to config.auto_link_patterns if not already present.
+    const val = stripQuotes(raw_val);
+    if (!std.mem.eql(u8, val, "true")) return;
+
+    // De-duplicate: skip if already registered.
+    for (config.auto_link_patterns) |existing| {
+        if (std.mem.eql(u8, existing, key)) return;
+    }
+
+    const pattern = try allocator.dupe(u8, key);
+    errdefer allocator.free(pattern);
+
+    const new_len = config.auto_link_patterns.len + 1;
+    const new_slice = try allocator.alloc([]const u8, new_len);
+    if (config.auto_link_patterns.len > 0) {
+        @memcpy(new_slice[0..config.auto_link_patterns.len], config.auto_link_patterns);
+        allocator.free(config.auto_link_patterns);
+    }
+    new_slice[new_len - 1] = pattern;
+    config.auto_link_patterns = new_slice;
 }
 
 // ============================================================================

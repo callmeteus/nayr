@@ -139,6 +139,22 @@ pub fn runAutolink(
 // Internal helpers
 // ============================================================================
 
+/// Registers `cwd` as a global link for the package named `name`.
+///
+/// Called both by `nayr link` (interactive) and by the auto-link logic in
+/// `nayr install` when the package name matches a `[links]` glob in `.nayrrc`.
+pub fn registerPackage(
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    cwd: []const u8,
+    writer: output.Writer,
+) !void {
+    const links_dir = try platform.getLinksDir(allocator);
+    defer allocator.free(links_dir);
+    try fs_util.mkdirAllRecursive(allocator, links_dir);
+    try registerNamedPackage(allocator, name, cwd, links_dir, writer);
+}
+
 fn registerCurrentPackage(
     allocator: std.mem.Allocator,
     cwd: []const u8,
@@ -155,7 +171,16 @@ fn registerCurrentPackage(
         writer.emit(.{ .err = "package.json has no name field" });
         return;
     };
+    try registerNamedPackage(allocator, name, cwd, links_dir, writer);
+}
 
+fn registerNamedPackage(
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    cwd: []const u8,
+    links_dir: []const u8,
+    writer: output.Writer,
+) !void {
     // For scoped packages, ensure the scope directory exists.
     if (name[0] == '@') {
         const slash = std.mem.indexOfScalar(u8, name, '/') orelse return error.InvalidPackageName;
@@ -166,6 +191,12 @@ fn registerCurrentPackage(
 
     const link_path = try std.fs.path.join(allocator, &.{ links_dir, name });
     defer allocator.free(link_path);
+
+    // If already pointing to this exact directory, skip silently.
+    if (platform.readSymlinkAbsolute(allocator, link_path)) |existing| {
+        defer allocator.free(existing);
+        if (std.mem.eql(u8, existing, cwd)) return;
+    } else |_| {}
 
     std.fs.deleteFileAbsolute(link_path) catch {};
     std.fs.deleteTreeAbsolute(link_path) catch {};

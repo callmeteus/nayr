@@ -18,6 +18,7 @@ const json_util = @import("../util/json.zig");
 const platform = @import("../util/platform.zig");
 const output = @import("../util/output.zig");
 const config_types = @import("../config/types.zig");
+const link_cmd = @import("link.zig");
 const Config = config_types.Config;
 
 // ============================================================================
@@ -83,6 +84,20 @@ pub fn run(
         },
         else => return err,
     };
+
+    // Auto-register this package as a global link if its name matches one of
+    // the glob patterns declared in `.nayrrc [links]`.
+    if (config.auto_link_patterns.len > 0) {
+        if (json_util.parseFile(allocator, pkg_json_path)) |manifest_val| {
+            var manifest = manifest_val;
+            defer manifest.deinit(allocator);
+            if (manifest.name) |name| {
+                if (matchesAutoLinkPattern(name, config.auto_link_patterns)) {
+                    link_cmd.registerPackage(allocator, name, cwd, writer) catch {};
+                }
+            }
+        } else |_| {}
+    }
 
     // Fast path: integrity check.
     if (!opts.force and !opts.check_files) {
@@ -213,6 +228,29 @@ pub fn run(
     );
     defer allocator.free(summary);
     writer.emit(.{ .done = .{ .elapsed_ms = elapsed, .summary = summary } });
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/// Returns true when `pkg_name` matches any of the auto-link glob patterns.
+///
+/// Supported pattern forms:
+///   `@scope/*`  - matches any package under that scope
+///   `@scope/x`  - exact match (degenerate case, same as a literal name)
+fn matchesAutoLinkPattern(pkg_name: []const u8, patterns: []const []const u8) bool {
+    for (patterns) |pat| {
+        // Wildcard: "@scope/*" matches any "@scope/<anything>"
+        if (std.mem.endsWith(u8, pat, "/*")) {
+            const prefix = pat[0 .. pat.len - 1]; // "@scope/"
+            if (std.mem.startsWith(u8, pkg_name, prefix)) return true;
+        } else {
+            // Exact match.
+            if (std.mem.eql(u8, pkg_name, pat)) return true;
+        }
+    }
+    return false;
 }
 
 // ============================================================================

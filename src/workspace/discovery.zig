@@ -65,6 +65,19 @@ pub fn discover(allocator: std.mem.Allocator, root_dir: []const u8) ![]Workspace
         }
 
         for (matches) |match_path| {
+            // Skip paths inside node_modules/. These are special Yarn nohoist
+            // workspace patterns (e.g. "node_modules/@scope/pkg") that point to
+            // already-installed packages, not source-code workspace packages.
+            // Treating them as real workspaces causes their devDependencies to be
+            // pulled into the root resolution, leading to spurious lock entries.
+            const node_modules_sep = std.fs.path.sep_str ++ "node_modules" ++ std.fs.path.sep_str;
+            if (std.mem.indexOf(u8, match_path, node_modules_sep) != null or
+                std.mem.endsWith(u8, match_path, std.fs.path.sep_str ++ "node_modules") or
+                std.mem.startsWith(u8, match_path, "node_modules" ++ std.fs.path.sep_str))
+            {
+                continue;
+            }
+
             const pkg_json_path = try std.fs.path.join(allocator, &.{ match_path, "package.json" });
             defer allocator.free(pkg_json_path);
 
