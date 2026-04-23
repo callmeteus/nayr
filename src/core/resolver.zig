@@ -339,7 +339,11 @@ pub fn resolve(
             // lockfile, and even version constraints. The developer controls
             // the version they're testing against.
             if (links_map.get(req.name)) |link_target| {
-                // Read the local package.json to obtain the current version.
+                // Read the local package.json to obtain the current version and
+                // runtime dependencies. The deps are enqueued so that transitive
+                // requirements of the linked package (e.g. TypeScript) are
+                // installed in the consumer's node_modules and their bin stubs
+                // (e.g. .bin/tsc) are created — matching Yarn Classic behaviour.
                 const pkg_json_path = try std.fs.path.join(allocator, &.{ link_target, "package.json" });
                 defer allocator.free(pkg_json_path);
                 var local_manifest = json_util.parseFile(allocator, pkg_json_path) catch null;
@@ -350,6 +354,9 @@ pub fn resolve(
                         allocator.free(local_version_owned);
                         local_version_owned = try allocator.dupe(u8, v);
                     }
+                    // Enqueue runtime deps before freeing (enqueueMapDeps dupes strings).
+                    try enqueueMapDeps(allocator, &queue, &m.dependencies, false);
+                    try enqueueMapDeps(allocator, &queue, &m.optional_dependencies, opts.ignore_optional);
                     m.deinit(allocator);
                 }
                 defer allocator.free(local_version_owned);

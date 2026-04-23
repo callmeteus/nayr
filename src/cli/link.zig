@@ -136,6 +136,84 @@ pub fn runAutolink(
 }
 
 // ============================================================================
+// Install-time relink helper
+// ============================================================================
+
+/// Applies any registered links for packages listed in `cwd`'s manifest.
+///
+/// Called during `nayr install` before the integrity fast-path so that a
+/// newly registered link (e.g. from running `nayr install` in a sibling
+/// package that auto-linked itself) is picked up even when the rest of
+/// node_modules is already up-to-date.
+///
+/// Checks all dependency categories: dependencies, devDependencies,
+/// optionalDependencies, and peerDependencies.  Silently skips packages
+/// not present in any registry; only emits output when a link is actually
+/// applied or updated.
+pub fn applyRegisteredLinks(
+    allocator: std.mem.Allocator,
+    cwd: []const u8,
+    writer: output.Writer,
+) !void {
+    const links_dir = try platform.getLinksDir(allocator);
+    defer allocator.free(links_dir);
+
+    const manifest_path = try std.fs.path.join(allocator, &.{ cwd, "package.json" });
+    defer allocator.free(manifest_path);
+
+    var manifest = json_util.parseFile(allocator, manifest_path) catch return;
+    defer manifest.deinit(allocator);
+
+    const all_maps = [_]*json_util.PackageJson.StringMap{
+        &manifest.dependencies,
+        &manifest.dev_dependencies,
+        &manifest.optional_dependencies,
+        &manifest.peer_dependencies,
+    };
+
+    for (all_maps) |dep_map| {
+        var it = dep_map.iterator();
+        while (it.next()) |kv| {
+            const name = kv.key_ptr.*;
+
+            const link_path = try std.fs.path.join(allocator, &.{ links_dir, name });
+            defer allocator.free(link_path);
+
+            const in_nayr = if (std.fs.accessAbsolute(link_path, .{})) |_| true else |_| false;
+            if (!in_nayr) {
+                // Check yarn as fallback; importFromYarn registers it if found.
+                const imported = try importFromYarn(allocator, name, links_dir, writer);
+                if (!imported) continue;
+            }
+
+            // Verify that the current node_modules entry is already a valid
+            // symlink pointing to the registered target. Skip if it is so we
+            // don't emit noise on every install.
+            const dest = try std.fs.path.join(allocator, &.{ cwd, "node_modules", name });
+            defer allocator.free(dest);
+            const reg_target = platform.readSymlinkAbsolute(allocator, link_path) catch {
+                try linkPackageIntoNodeModules(allocator, name, cwd, links_dir, writer);
+                continue;
+            };
+            defer allocator.free(reg_target);
+
+            const current = platform.readSymlinkAbsolute(allocator, dest) catch {
+                // dest is not a symlink (missing, or a plain directory) - create it.
+                try linkPackageIntoNodeModules(allocator, name, cwd, links_dir, writer);
+                continue;
+            };
+            defer allocator.free(current);
+
+            if (!std.mem.eql(u8, current, reg_target)) {
+                // Points to a different target (stale link) - update it.
+                try linkPackageIntoNodeModules(allocator, name, cwd, links_dir, writer);
+            }
+            // If targets match, the symlink is already correct - do nothing.
+        }
+    }
+}
+
+// ============================================================================
 // Internal helpers
 // ============================================================================
 

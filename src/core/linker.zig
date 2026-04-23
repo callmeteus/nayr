@@ -181,6 +181,11 @@ fn installGitPackage(
     };
 
     if (exit_code != 0) {
+        // Remove any partial directory that git may have created before failing.
+        // Without this cleanup the directory shows up as an empty entry in
+        // node_modules and confuses subsequent integrity checks and installs.
+        std.fs.deleteTreeAbsolute(dest) catch {};
+
         const wmsg = try std.fmt.allocPrint(
             allocator,
             "git clone exited {d} for {s}{s}{s}",

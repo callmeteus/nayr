@@ -99,6 +99,15 @@ pub fn run(
         } else |_| {}
     }
 
+    // Pre-install relink: apply any registered links for deps in this project.
+    //
+    // This runs before the integrity fast-path so that a link registered by a
+    // sibling package's recent install is picked up immediately - even when
+    // nothing else in node_modules has changed.  Also fixes the case where a
+    // git-dep clone previously failed and left an empty directory: the correct
+    // symlink replaces it here without requiring a full reinstall.
+    link_cmd.applyRegisteredLinks(allocator, cwd, writer) catch {};
+
     // Fast path: integrity check.
     if (!opts.force and !opts.check_files) {
         if (try integrity_mod.isUpToDate(allocator, cwd)) {
