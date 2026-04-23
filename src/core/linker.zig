@@ -82,13 +82,13 @@ pub fn link(
             }
             // Link bin stubs even for workspace/linked packages so that any
             // executables declared in their package.json#bin are available.
-            try linkBinEntries(allocator, bin_dir, dest, hp.name);
+            try linkBinEntries(allocator, bin_dir, dest, hp.name, writer);
         } else if (hp.pkg.is_git) {
             // Git dependency: clone the repository directly into node_modules.
             // We preserve existing clones to avoid re-cloning on every install
             // (the integrity check guards re-entry at a higher level).
             try installGitPackage(allocator, hp.pkg.tarball_url, dest, hp.name, writer);
-            try linkBinEntries(allocator, bin_dir, dest, hp.name);
+            try linkBinEntries(allocator, bin_dir, dest, hp.name, writer);
         } else {
             // Registry package: copy from cache.
             const cache_dir = cache.extractedDir(hp.pkg.registry, hp.name, hp.version) catch continue;
@@ -97,7 +97,7 @@ pub fn link(
             try copyPackageDir(allocator, cache_dir, dest);
 
             // Create .bin/ stubs for this package's executables.
-            try linkBinEntries(allocator, bin_dir, dest, hp.name);
+            try linkBinEntries(allocator, bin_dir, dest, hp.name, writer);
         }
 
         writer.emit(.{ .link_progress = .{
@@ -109,6 +109,67 @@ pub fn link(
     // Remove extraneous entries (packages present in node_modules but not
     // in the hoisted layout - they were removed from package.json).
     try removeExtraneous(allocator, node_modules, &installed, writer);
+}
+
+// ============================================================================
+// Bin stub repair
+// ============================================================================
+
+/// Walks `node_modules/` and creates any missing `.bin/` stubs.
+///
+/// This is a lightweight, idempotent pass that runs before the integrity
+/// fast-path on every `nayr install`. It ensures bin stubs always exist for
+/// every installed package, even when a previous install was interrupted,
+/// the integrity file was stale, or `.bin/` was manually cleaned.
+///
+/// Only root-level packages are processed; nested `node_modules` (inside
+/// package directories) are not touched — matching Yarn Classic behaviour.
+///
+/// ## Parameters
+/// - `allocator`: Scratch allocator.
+/// - `root_dir`: Absolute path to the project root.
+/// - `writer`: Output event sink (warnings only; no info emitted on success).
+pub fn repairBinStubs(
+    allocator: std.mem.Allocator,
+    root_dir: []const u8,
+    writer: output.Writer,
+) !void {
+    const node_modules = try std.fs.path.join(allocator, &.{ root_dir, "node_modules" });
+    defer allocator.free(node_modules);
+
+    var nm_dir = std.fs.openDirAbsolute(node_modules, .{ .iterate = true }) catch return;
+    defer nm_dir.close();
+
+    const bin_dir = try std.fs.path.join(allocator, &.{ node_modules, ".bin" });
+    defer allocator.free(bin_dir);
+    try fs_util.mkdirAllRecursive(allocator, bin_dir);
+
+    var iter = nm_dir.iterate();
+    while (try iter.next()) |entry| {
+        if (entry.name[0] == '.') continue;
+
+        if (entry.name[0] == '@') {
+            // Scoped package: one level deeper.
+            const scope_path = try std.fs.path.join(allocator, &.{ node_modules, entry.name });
+            defer allocator.free(scope_path);
+            var scope_dir = std.fs.openDirAbsolute(scope_path, .{ .iterate = true }) catch continue;
+            defer scope_dir.close();
+            var sit = scope_dir.iterate();
+            while (try sit.next()) |sub| {
+                if (sub.name[0] == '.') continue;
+                const pkg_dir = try std.fs.path.join(allocator, &.{ scope_path, sub.name });
+                defer allocator.free(pkg_dir);
+                const pkg_name = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ entry.name, sub.name });
+                defer allocator.free(pkg_name);
+                try linkBinEntries(allocator, bin_dir, pkg_dir, pkg_name, writer);
+            }
+            continue;
+        }
+
+        const pkg_dir = try std.fs.path.join(allocator, &.{ node_modules, entry.name });
+        defer allocator.free(pkg_dir);
+        try linkBinEntries(allocator, bin_dir, pkg_dir, entry.name, writer);
+    }
 }
 
 // ============================================================================
@@ -256,11 +317,23 @@ fn linkBinEntries(
     bin_dir: []const u8,
     pkg_dir: []const u8,
     pkg_name: []const u8,
+    writer: output.Writer,
 ) !void {
     const manifest_path = try std.fs.path.join(allocator, &.{ pkg_dir, "package.json" });
     defer allocator.free(manifest_path);
 
-    var manifest = json_util.parseFile(allocator, manifest_path) catch return;
+    var manifest = json_util.parseFile(allocator, manifest_path) catch |err| {
+        if (err != error.FileNotFound) {
+            const wmsg = std.fmt.allocPrint(
+                allocator,
+                "bin stubs: could not read {s}/package.json: {s}",
+                .{ pkg_name, @errorName(err) },
+            ) catch return;
+            defer allocator.free(wmsg);
+            writer.emit(.{ .warning = wmsg });
+        }
+        return;
+    };
     defer manifest.deinit(allocator);
 
     switch (manifest.bin) {
@@ -273,14 +346,30 @@ fn linkBinEntries(
                 pkg_name[slash + 1 ..]
             else
                 pkg_name;
-            platform.createBinStub(allocator, bin_dir, bin_name, script_path) catch {};
+            platform.createBinStub(allocator, bin_dir, bin_name, script_path) catch |err| {
+                const wmsg = std.fmt.allocPrint(
+                    allocator,
+                    "bin stubs: failed to create .bin/{s} for {s}: {s}",
+                    .{ bin_name, pkg_name, @errorName(err) },
+                ) catch return;
+                defer allocator.free(wmsg);
+                writer.emit(.{ .warning = wmsg });
+            };
         },
         .map => |entries| {
             var it = entries.iterator();
             while (it.next()) |kv| {
                 const script_path = try std.fs.path.join(allocator, &.{ pkg_dir, kv.value_ptr.* });
                 defer allocator.free(script_path);
-                platform.createBinStub(allocator, bin_dir, kv.key_ptr.*, script_path) catch {};
+                platform.createBinStub(allocator, bin_dir, kv.key_ptr.*, script_path) catch |err| {
+                    const wmsg = std.fmt.allocPrint(
+                        allocator,
+                        "bin stubs: failed to create .bin/{s} for {s}: {s}",
+                        .{ kv.key_ptr.*, pkg_name, @errorName(err) },
+                    ) catch return;
+                    defer allocator.free(wmsg);
+                    writer.emit(.{ .warning = wmsg });
+                };
             }
         },
     }

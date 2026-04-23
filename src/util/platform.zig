@@ -266,9 +266,22 @@ pub fn createBinStub(allocator: std.mem.Allocator, bin_dir: []const u8, name: []
     // POSIX: create a symlink from .bin/<name> -> <target>
     const link_path = try std.fs.path.join(allocator, &.{ bin_dir, name });
     defer allocator.free(link_path);
-    // Remove any existing entry (idempotent).
-    fs.deleteFileAbsolute(link_path) catch {};
-    try symlinkOrJunction(target, link_path);
+
+    // Remove any existing entry. deleteFileAbsolute removes files and symlinks
+    // but fails for directories; deleteTreeAbsolute handles all cases.
+    fs.deleteFileAbsolute(link_path) catch {
+        fs.deleteTreeAbsolute(link_path) catch {};
+    };
+
+    // Compute a relative target path from bin_dir to target.
+    // Relative symlinks are portable (survive project directory moves) and
+    // match the behaviour of Yarn Classic and npm.
+    const rel_target = fs.path.relative(allocator, bin_dir, target) catch target;
+    const owned_rel = if (rel_target.ptr == target.ptr) null else rel_target;
+    defer if (owned_rel) |r| allocator.free(r);
+    const sym_target = if (owned_rel) |r| r else target;
+
+    try symlinkOrJunction(sym_target, link_path);
 }
 
 /// Runs a shell command string using the platform's native shell, with

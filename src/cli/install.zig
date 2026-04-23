@@ -108,6 +108,15 @@ pub fn run(
     // symlink replaces it here without requiring a full reinstall.
     link_cmd.applyRegisteredLinks(allocator, cwd, writer) catch {};
 
+    // Repair bin stubs: walk node_modules/ and create any missing .bin/ stubs.
+    //
+    // This lightweight pass runs before the integrity fast-path so that bin
+    // stubs are always present even when a previous install was interrupted, the
+    // integrity file was written before stubs were created, or .bin/ was cleaned
+    // manually. The pass is idempotent and skips packages that already have all
+    // their stubs in place.
+    linker_mod.repairBinStubs(allocator, cwd, writer) catch {};
+
     // Fast path: integrity check.
     if (!opts.force and !opts.check_files) {
         if (try integrity_mod.isUpToDate(allocator, cwd)) {
