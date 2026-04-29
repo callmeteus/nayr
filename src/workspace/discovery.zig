@@ -122,11 +122,18 @@ pub fn buildNameMap(
 
 /// Returns the nohoist patterns from the root manifest's extended workspace config.
 ///
+/// Nohoist patterns are only meaningful when there are actual workspace packages
+/// declared under `packages`. When the list is empty (e.g. a standalone project
+/// that only has `workspaces: { nohoist: ["**"] }` without any workspace members),
+/// Yarn Classic silently ignores nohoist — nayr matches that behaviour so that
+/// patterns like `**` don't accidentally block every dependency from being
+/// hoisted to the root `node_modules`.
+///
 /// ## Returns
-/// Slice of nohoist glob patterns, or an empty slice if none.
+/// Slice of nohoist glob patterns, or an empty slice if none / no workspaces.
 pub fn nohoistPatterns(root_manifest: *const PackageJson) []const []const u8 {
     return switch (root_manifest.workspaces) {
-        .extended => |e| e.nohoist,
+        .extended => |e| if (e.packages.len > 0) e.nohoist else &.{},
         else => &.{},
     };
 }
