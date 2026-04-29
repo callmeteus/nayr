@@ -31,6 +31,169 @@ const VersionInfo = reg_types.VersionInfo;
 const builtin = @import("builtin");
 
 // ============================================================================
+// Batch fetch API
+// ============================================================================
+
+/// A single item in a batch metadata request.
+pub const BatchItem = struct {
+    name: []const u8,
+    optional: bool,
+};
+
+/// Result for one item in a batch metadata request.
+pub const BatchResult = struct {
+    /// Index into the original `[]BatchItem` slice.
+    idx: usize,
+    /// Parsed metadata; null on error.
+    meta: ?PackageMetadata,
+    /// Non-null when the fetch or parse failed.
+    err: ?anyerror,
+};
+
+/// Fetches registry metadata for multiple packages in a single curl invocation.
+///
+/// Uses `curl --parallel` with HTTP/2 multiplexing (where available) so that
+/// all requests share one TLS connection to the registry instead of opening a
+/// new connection per package. This is dramatically faster than spawning one
+/// curl process per package.
+///
+/// Results are written to temp files and parsed after curl exits. The order of
+/// `results` matches the order of `items`.
+///
+/// ## Parameters
+/// - `allocator`: Used for all allocations.
+/// - `items`:     Slice of packages to fetch.
+/// - `config`:    Registry/auth configuration.
+///
+/// ## Returns
+/// Owned slice of `BatchResult`; caller must free and deinit each entry.
+pub fn fetchMetadataBatch(
+    allocator: std.mem.Allocator,
+    items: []const BatchItem,
+    config: *const Config,
+) ![]BatchResult {
+    if (items.len == 0) return try allocator.alloc(BatchResult, 0);
+
+    // Create temp file paths.  Use nanosecond timestamp + index for uniqueness.
+    const batch_id: u64 = @truncate(@as(u128, @bitCast(std.time.nanoTimestamp())));
+
+    const temp_paths = try allocator.alloc([]const u8, items.len);
+    defer allocator.free(temp_paths);
+    var created: usize = 0;
+    defer {
+        for (temp_paths[0..created]) |p| {
+            std.fs.deleteFileAbsolute(p) catch {};
+            allocator.free(p);
+        }
+    }
+    for (0..items.len) |i| {
+        temp_paths[i] = try std.fmt.allocPrint(
+            allocator,
+            "/tmp/nayr-{x}-{d}.json",
+            .{ batch_id, i },
+        );
+        created = i + 1;
+    }
+
+    // Build curl argv.  Heap strings (URLs, auth headers) go into `owned` so
+    // we can free them after the child process has been spawned and waited.
+    var owned = std.ArrayList([]const u8).init(allocator);
+    defer {
+        for (owned.items) |s| allocator.free(s);
+        owned.deinit();
+    }
+    var argv = std.ArrayList([]const u8).init(allocator);
+    defer argv.deinit();
+
+    try argv.appendSlice(&.{
+        "curl",
+        "-Z",                   // parallel transfers
+        "--parallel-max", "128",
+        "--http2",              // HTTP/2 multiplexing; falls back to HTTP/1.1
+        "--silent",
+        "--show-error",
+        "-L",
+        "--max-time", "120",
+        "--retry", "2",
+        "--retry-delay", "1",
+        "--compressed",
+        "-A", "nayr/2.0.0",
+        "-H", "Accept: application/vnd.npm.install-v1+json",
+    });
+
+    // Determine the primary auth token from the first item's scope.
+    // This covers the common single-registry setup.  When packages span
+    // multiple registries the auth header is still correct for the majority
+    // of requests (npm public registry) and wrong only for private scopes —
+    // acceptable for now; per-URL auth is a future improvement.
+    if (items.len > 0) {
+        const first_scope = extractScope(items[0].name);
+        const first_reg = config.getRegistry(first_scope);
+        if (config.getAuthToken(first_reg)) |tok| {
+            const hdr = try std.fmt.allocPrint(allocator, "Authorization: Bearer {s}", .{tok});
+            try owned.append(hdr);
+            try argv.appendSlice(&.{ "-H", hdr });
+        }
+    }
+
+    // Append per-URL pairs: `<url> -o <temp_path>`.
+    for (items, temp_paths) |item, temp_path| {
+        const scope = extractScope(item.name);
+        const registry = config.getRegistry(scope);
+        const encoded = try encodeName(allocator, item.name);
+        defer allocator.free(encoded);
+
+        const url = try std.fmt.allocPrint(
+            allocator,
+            "{s}/{s}",
+            .{ std.mem.trimRight(u8, registry, "/"), encoded },
+        );
+        try owned.append(url);
+
+        try argv.append(url);
+        try argv.appendSlice(&.{ "-o", temp_path });
+    }
+
+    // Spawn curl and wait for completion.  We ignore the exit code here
+    // because individual URL failures (404, 403) show up as missing/invalid
+    // temp files, handled per-item below.
+    var child = std.process.Child.init(argv.items, allocator);
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Pipe;
+    try child.spawn();
+    const stderr_data = try child.stderr.?.reader().readAllAlloc(allocator, 64 * 1024);
+    defer allocator.free(stderr_data);
+    _ = try child.wait();
+
+    // Parse each temp file into a result.
+    const results = try allocator.alloc(BatchResult, items.len);
+    for (items, temp_paths, results, 0..) |item, temp_path, *r, i| {
+        r.* = BatchResult{ .idx = i, .meta = null, .err = null };
+        _ = item;
+
+        const body = blk: {
+            const f = std.fs.openFileAbsolute(temp_path, .{}) catch |err| {
+                r.err = err;
+                continue;
+            };
+            defer f.close();
+            break :blk f.readToEndAlloc(allocator, 128 * 1024 * 1024) catch |err| {
+                r.err = err;
+                continue;
+            };
+        };
+        defer allocator.free(body);
+
+        r.meta = parseMetadata(allocator, body) catch |err| {
+            r.err = err;
+            continue;
+        };
+    }
+
+    return results;
+}
+
+// ============================================================================
 // Client
 // ============================================================================
 

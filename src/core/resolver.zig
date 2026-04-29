@@ -15,17 +15,16 @@
 //!
 //! ## Parallelism
 //!
-//! Resolution uses a **FIFO worker-pool BFS**. N worker threads live for the
-//! entire resolve() call. The main thread classifies each dep request:
+//! Resolution uses **wave-based batch fetching**.  Each "wave" drains the BFS
+//! queue, handling fast paths (workspace / lockfile / git) inline, then
+//! dispatches all remaining registry requests as a SINGLE curl --parallel
+//! invocation.  curl uses HTTP/2 multiplexing so all requests in a wave share
+//! one TLS connection to the registry, eliminating per-request TLS handshake
+//! overhead.  This is dramatically faster than the previous approach of
+//! spawning one curl process per package.
 //!
-//!   - Workspace / lockfile / git: resolved immediately (no I/O).
-//!   - Registry: pushed to the fetch queue for a free worker.
-//!
-//! Workers fetch metadata and push results back via a result queue. The main
-//! thread processes results as they arrive and immediately queues transitive
-//! deps - no waiting for an entire "wave" to finish. This gives true FIFO
-//! pipeline behaviour: deeper levels start fetching as soon as their parent
-//! result is ready, not after all siblings complete.
+//! Waves correspond roughly to BFS depth levels of the dependency graph.
+//! For a typical npm project this is 4-6 waves.
 
 const std = @import("std");
 const semver = @import("../semver/parser.zig");
@@ -133,8 +132,8 @@ pub const ResolverOptions = struct {
     force: bool = false,
     /// Include only devDependencies.
     dev_only: bool = false,
-    /// Number of parallel metadata-fetch threads per wave.
-    concurrency: u32 = 32,
+    /// Maximum parallel metadata fetches per batch (curl --parallel-max).
+    concurrency: u32 = 128,
 };
 
 // ============================================================================
@@ -182,10 +181,6 @@ pub fn resolve(
     defer allocator.free(root_manifest_path);
     var root_manifest = try json_util.parseFile(allocator, root_manifest_path);
     defer root_manifest.deinit(allocator);
-
-    // Thread-safe allocator: workers allocate metadata on the same GPA.
-    var ts_wrapper = std.heap.ThreadSafeAllocator{ .child_allocator = allocator };
-    const ts_alloc = ts_wrapper.allocator();
 
     // --- Collect seed dependencies ---
     var queue = std.ArrayList(DepRequest).init(allocator);
@@ -237,58 +232,28 @@ pub fn resolve(
         links_map.deinit(allocator);
     }
 
-    // --- FIFO parallel BFS with persistent worker pool ---
+    // --- Wave-based parallel BFS ---
     //
-    // `queue` is the append-only BFS queue; `qi` is the next unclassified index.
-    // Fast paths (workspace / lockfile / git) are resolved inline by the main
-    // thread. Registry packages are pushed to `ch.fetch_items`; workers fetch
-    // their metadata and push `FetchResult` to `ch.result_items`.
+    // Each wave:
+    //   1. Drains the BFS queue, handling fast paths (workspace/lockfile/git)
+    //      inline and accumulating registry requests into `pending_batch`.
+    //   2. When the queue is exhausted for the wave, dispatches ALL pending
+    //      registry requests as a single curl --parallel invocation using
+    //      HTTP/2 multiplexing (one TLS connection, many streams).
+    //   3. Processes all results and enqueues transitive deps into `queue`.
+    //   4. Repeats until both `queue` and `pending_batch` are empty.
     //
-    // Main thread loop:
-    //   1. Drain all currently-available queue items (fast paths inline,
-    //      registry pushed to workers → in_flight++).
-    //   2. Wait for a result when in_flight > 0 and queue is exhausted.
-    //   3. Process result, enqueue transitive deps → back to step 1.
-    //
-    // Termination: qi >= queue.items.len AND in_flight == 0.
+    // This eliminates per-request curl process spawns and TLS handshakes.
+    // For a project with 1000 registry-fetched packages and 5 BFS levels,
+    // this means ~5 curl invocations instead of ~1000.
 
-    var ch = FifoChannels{
-        .ts_alloc = ts_alloc,
-        .config = config,
-        .fetch_mutex = .{},
-        .fetch_cond = .{},
-        .fetch_items = .{},
-        .result_mutex = .{},
-        .result_cond = .{},
-        .result_items = .{},
-        .shutdown = std.atomic.Value(bool).init(false),
-    };
-
-    const n_workers = opts.concurrency;
-    const worker_threads = try allocator.alloc(std.Thread, n_workers);
-    var workers_spawned: usize = 0;
-    defer {
-        ch.shutdown.store(true, .release);
-        ch.fetch_cond.broadcast();
-        for (worker_threads[0..workers_spawned]) |t| t.join();
-        allocator.free(worker_threads);
-        // Drain any buffered results left over from an early-exit on error.
-        for (ch.result_items.items) |*r| {
-            if (r.meta) |*m| m.deinit(allocator);
-        }
-        ch.result_items.deinit(allocator);
-        ch.fetch_items.deinit(allocator);
-    }
-    for (worker_threads) |*t| {
-        t.* = try std.Thread.spawn(.{}, fifoWorker, .{&ch});
-        workers_spawned += 1;
-    }
+    var pending_batch = std.ArrayList(PendingFetch).init(allocator);
+    defer pending_batch.deinit();
 
     var qi: usize = 0;
-    var in_flight: usize = 0; // items pushed to workers, results not yet processed
 
-    while (qi < queue.items.len or in_flight > 0) {
-        // --- Drain available queue items (fast paths inline) ---
+    while (qi < queue.items.len or pending_batch.items.len > 0) {
+        // --- Drain the BFS queue ---
         while (qi < queue.items.len) {
             const req = queue.items[qi];
             qi += 1;
@@ -460,119 +425,119 @@ pub fn resolve(
                 continue;
             }
 
-            // 4. Registry - hand off to the worker pool.
+            // 4. Registry - defer to the wave's batch.
             if (opts.frozen_lockfile) return error.FrozenLockfileChanged;
-            ch.fetch_mutex.lock();
-            try ch.fetch_items.append(allocator, FetchJob{
+            try pending_batch.append(.{
                 .name = req.name,
                 .eff_range = effective_range,
                 .optional = req.optional,
             });
-            ch.fetch_mutex.unlock();
-            ch.fetch_cond.signal();
-            in_flight += 1;
         }
 
-        if (in_flight == 0) break; // nothing left anywhere
+        if (pending_batch.items.len == 0) break;
 
-        // --- Wait for the next result from a worker ---
-        var result: FetchResult = blk: {
-            ch.result_mutex.lock();
-            defer ch.result_mutex.unlock();
-            while (ch.result_items.items.len == 0) {
-                ch.result_cond.wait(&ch.result_mutex);
+        // --- Dispatch the wave's registry batch ---
+        //
+        // Build the BatchItem slice (name + optional flag) for the client and
+        // run one curl --parallel invocation for ALL items in this wave.
+        const batch_items = try allocator.alloc(registry_client.BatchItem, pending_batch.items.len);
+        defer allocator.free(batch_items);
+        for (pending_batch.items, batch_items) |pf, *bi| {
+            bi.* = .{ .name = pf.name, .optional = pf.optional };
+        }
+
+        const batch_results = try registry_client.fetchMetadataBatch(allocator, batch_items, config);
+        defer {
+            for (batch_results) |*r| if (r.meta) |*m| m.deinit(allocator);
+            allocator.free(batch_results);
+        }
+
+        for (batch_results, pending_batch.items) |*result, pf| {
+            if (result.err) |err| {
+                if (pf.optional) continue;
+                std.io.getStdErr().writer().print(
+                    "  warn  failed to resolve package: {s}\n",
+                    .{pf.name},
+                ) catch {};
+                return err;
             }
-            break :blk ch.result_items.swapRemove(0);
-        };
-        in_flight -= 1;
 
-        // result.meta is freed at every exit path of this block.
-        defer if (result.meta) |*m| m.deinit(allocator);
+            const meta = result.meta orelse continue;
 
-        if (result.err) |err| {
-            if (result.job.optional) continue;
-            std.io.getStdErr().writer().print(
-                "  warn  failed to resolve package: {s}\n",
-                .{result.job.name},
-            ) catch {};
-            return err;
-        }
+            var version_strs = try std.ArrayList([]const u8).initCapacity(
+                allocator,
+                meta.versions.count(),
+            );
+            defer version_strs.deinit();
+            var v_it = meta.versions.keyIterator();
+            while (v_it.next()) |k| try version_strs.append(k.*);
 
-        const meta = result.meta orelse continue;
+            const latest = meta.dist_tags.get("latest");
+            const best_ver = semver.maxSatisfying(
+                allocator,
+                version_strs.items,
+                pf.eff_range,
+                latest,
+            ) orelse {
+                if (pf.optional) continue;
+                std.io.getStdErr().writer().print(
+                    "  warn  no version of {s} satisfies range \"{s}\"\n",
+                    .{ pf.name, pf.eff_range },
+                ) catch {};
+                return error.NoMatchingVersion;
+            };
 
-        var version_strs = try std.ArrayList([]const u8).initCapacity(
-            allocator,
-            meta.versions.count(),
-        );
-        defer version_strs.deinit();
-        var v_it = meta.versions.keyIterator();
-        while (v_it.next()) |k| try version_strs.append(k.*);
+            const ver_info = meta.versions.get(best_ver).?;
 
-        const latest = meta.dist_tags.get("latest");
-        const best_ver = semver.maxSatisfying(
-            allocator,
-            version_strs.items,
-            result.job.eff_range,
-            latest,
-        ) orelse {
-            if (result.job.optional) continue;
-            std.io.getStdErr().writer().print(
-                "  warn  no version of {s} satisfies range \"{s}\"\n",
-                .{ result.job.name, result.job.eff_range },
-            ) catch {};
-            return error.NoMatchingVersion;
-        };
+            const key = try std.fmt.allocPrint(
+                allocator,
+                "{s}@{s}",
+                .{ pf.name, ver_info.version },
+            );
 
-        const ver_info = meta.versions.get(best_ver).?;
-
-        const key = try std.fmt.allocPrint(
-            allocator,
-            "{s}@{s}",
-            .{ result.job.name, ver_info.version },
-        );
-
-        // Record range → resolved key for lockfile pattern generation.
-        {
-            const rtk_pat = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ result.job.name, result.job.eff_range });
-            const rtk_val = try allocator.dupe(u8, key);
-            const gop = try range_to_key.getOrPut(allocator, rtk_pat);
-            if (gop.found_existing) {
-                allocator.free(rtk_pat);
-                allocator.free(gop.value_ptr.*);
+            // Record range → resolved key for lockfile pattern generation.
+            {
+                const rtk_pat = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ pf.name, pf.eff_range });
+                const rtk_val = try allocator.dupe(u8, key);
+                const gop = try range_to_key.getOrPut(allocator, rtk_pat);
+                if (gop.found_existing) {
+                    allocator.free(rtk_pat);
+                    allocator.free(gop.value_ptr.*);
+                }
+                gop.value_ptr.* = rtk_val;
             }
-            gop.value_ptr.* = rtk_val;
-        }
 
-        if (resolved_set.contains(key)) {
-            allocator.free(key);
+            if (resolved_set.contains(key)) {
+                allocator.free(key);
+                try enqueueMapDeps(allocator, &queue, &ver_info.dependencies, false);
+                try enqueueMapDeps(allocator, &queue, &ver_info.optional_dependencies, opts.ignore_optional);
+                continue;
+            }
+
+            const rp = ResolvedPackage{
+                .name = try allocator.dupe(u8, pf.name),
+                .version = try allocator.dupe(u8, ver_info.version),
+                .tarball_url = try allocator.dupe(u8, ver_info.tarball),
+                .integrity = try allocator.dupe(u8, ver_info.integrity),
+                .registry = try allocator.dupe(u8, config.getRegistry(extractScope(pf.name))),
+                .is_workspace = false,
+                .is_git = false,
+                .dependencies = try copyStringMap(allocator, &ver_info.dependencies),
+                .optional_dependencies = try copyStringMap(allocator, &ver_info.optional_dependencies),
+            };
+            try resolved_set.put(allocator, key, rp);
+
             try enqueueMapDeps(allocator, &queue, &ver_info.dependencies, false);
             try enqueueMapDeps(allocator, &queue, &ver_info.optional_dependencies, opts.ignore_optional);
-            continue;
+
+            writer.emit(.{ .resolve_progress = .{
+                .resolved = @intCast(resolved_set.count()),
+                .total = @intCast(queue.items.len),
+                .name = rp.name,
+            } });
         }
 
-        const rp = ResolvedPackage{
-            .name = try allocator.dupe(u8, result.job.name),
-            .version = try allocator.dupe(u8, ver_info.version),
-            .tarball_url = try allocator.dupe(u8, ver_info.tarball),
-            .integrity = try allocator.dupe(u8, ver_info.integrity),
-            .registry = try allocator.dupe(u8, config.getRegistry(extractScope(result.job.name))),
-            .is_workspace = false,
-            .is_git = false,
-            .dependencies = try copyStringMap(allocator, &ver_info.dependencies),
-            .optional_dependencies = try copyStringMap(allocator, &ver_info.optional_dependencies),
-        };
-        try resolved_set.put(allocator, key, rp);
-
-        // Transitive deps go into `queue`; the main loop's `qi` will reach
-        // them and immediately push them to workers (true FIFO pipeline).
-        try enqueueMapDeps(allocator, &queue, &ver_info.dependencies, false);
-        try enqueueMapDeps(allocator, &queue, &ver_info.optional_dependencies, opts.ignore_optional);
-
-        writer.emit(.{ .resolve_progress = .{
-            .resolved = @intCast(resolved_set.count()),
-            .total = @intCast(queue.items.len),
-            .name = rp.name,
-        } });
+        pending_batch.clearRetainingCapacity();
     }
 
     // Free queue items (names and ranges were duped during enqueue).
@@ -606,6 +571,13 @@ pub fn resolve(
 const DepRequest = struct {
     name: []const u8,
     range: []const u8,
+    optional: bool,
+};
+
+/// A registry package queued for batch fetching in the current BFS wave.
+const PendingFetch = struct {
+    name: []const u8,
+    eff_range: []const u8,
     optional: bool,
 };
 
@@ -875,81 +847,6 @@ fn extractScope(name: []const u8) ?[]const u8 {
     if (name.len == 0 or name[0] != '@') return null;
     const slash = std.mem.indexOfScalar(u8, name, '/') orelse return null;
     return name[0..slash];
-}
-
-// ============================================================================
-// FIFO worker-pool infrastructure
-// ============================================================================
-
-/// A registry metadata fetch job (main → worker).
-const FetchJob = struct {
-    /// Points into the BFS queue; valid for the lifetime of resolve().
-    name: []const u8,
-    /// Effective version range after `resolutions` overrides.
-    eff_range: []const u8,
-    optional: bool,
-};
-
-/// Result of a metadata fetch (worker → main).
-const FetchResult = struct {
-    job: FetchJob,
-    /// Allocated on ts_alloc; caller must deinit.
-    meta: ?reg_types.PackageMetadata,
-    err: ?anyerror,
-};
-
-/// Shared channel state between the main thread and the worker pool.
-const FifoChannels = struct {
-    ts_alloc: std.mem.Allocator,
-    config: *const Config,
-
-    // Fetch queue: main pushes FetchJobs; workers pop and fetch.
-    fetch_mutex: std.Thread.Mutex,
-    fetch_cond: std.Thread.Condition,
-    fetch_items: std.ArrayListUnmanaged(FetchJob),
-
-    // Result queue: workers push FetchResults; main pops and processes.
-    result_mutex: std.Thread.Mutex,
-    result_cond: std.Thread.Condition,
-    result_items: std.ArrayListUnmanaged(FetchResult),
-
-    /// Set to true when workers should drain and exit.
-    shutdown: std.atomic.Value(bool),
-};
-
-/// Persistent worker thread: pops FetchJobs, fetches metadata, pushes results.
-fn fifoWorker(ch: *FifoChannels) void {
-    var client = registry_client.RegistryClient.init(ch.ts_alloc, ch.config);
-    defer client.deinit();
-
-    while (true) {
-        // Wait for a job (or shutdown signal).
-        const job: FetchJob = blk: {
-            ch.fetch_mutex.lock();
-            defer ch.fetch_mutex.unlock();
-            while (ch.fetch_items.items.len == 0) {
-                if (ch.shutdown.load(.acquire)) return;
-                ch.fetch_cond.wait(&ch.fetch_mutex);
-            }
-            // orderedRemove(0) preserves FIFO ordering.
-            break :blk ch.fetch_items.orderedRemove(0);
-        };
-
-        var result = FetchResult{ .job = job, .meta = null, .err = null };
-        if (client.fetchMetadata(job.name)) |meta| {
-            result.meta = meta;
-        } else |err| {
-            result.err = err;
-        }
-
-        ch.result_mutex.lock();
-        ch.result_items.append(ch.ts_alloc, result) catch {
-            ch.result_mutex.unlock();
-            return;
-        };
-        ch.result_mutex.unlock();
-        ch.result_cond.signal();
-    }
 }
 
 fn buildLockfile(
