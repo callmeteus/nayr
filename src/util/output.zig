@@ -331,8 +331,18 @@ const TuiWriter = struct {
         const w = self.stdout.writer();
         switch (event) {
             .resolve_progress => |p| {
-                // Trim long names so the line stays compact.
-                const name = if (p.name.len > 35) p.name[0..35] else p.name;
+                // Truncate the package name so the full progress line fits within
+                // the terminal width without wrapping. Wrapping breaks ANSI cursor
+                // control (\x1b[1A only moves up 1 terminal row, not 1 logical
+                // line) causing visual corruption on redraw.
+                //
+                // Fixed-width parts: spinner(1) + "  "(2) + label(9) + "  "(2)
+                //   + bar(24) + "  "(2) + count("XXXX/XXXX" max=9) + "  "(2) = 51
+                // We cap the suffix at (terminal_width - 53) to leave a 2-char margin.
+                const tw = terminalWidth();
+                const max_suffix: usize = if (tw > 53) tw - 53 else 0;
+                const raw = p.name;
+                const name = if (raw.len > max_suffix) raw[0..max_suffix] else raw;
                 self.drawProgress(1, "resolving", "\x1b[36m", p.resolved, p.total, name);
             },
             .fetch_progress => |p| {
@@ -658,6 +668,20 @@ pub fn printBanner(format: Format, silent: bool) void {
 pub fn hasTtyStderr() bool {
     if (hasNoColor()) return false;
     return std.posix.isatty(std.io.getStdErr().handle);
+}
+
+/// Returns the terminal width in columns, or 80 as a safe fallback.
+///
+/// Tries TIOCGWINSZ ioctl first (POSIX), then the COLUMNS env var, then 80.
+fn terminalWidth() usize {
+    if (@import("builtin").os.tag != .windows) {
+        var ws: std.posix.winsize = undefined;
+        const rc = std.os.linux.ioctl(std.io.getStdOut().handle, std.os.linux.T.IOCGWINSZ, @intFromPtr(&ws));
+        if (rc == 0 and ws.col > 0) return ws.col;
+    }
+    const cols_str = std.process.getEnvVarOwned(std.heap.page_allocator, "COLUMNS") catch return 80;
+    defer std.heap.page_allocator.free(cols_str);
+    return std.fmt.parseInt(usize, std.mem.trim(u8, cols_str, " "), 10) catch 80;
 }
 
 /// Returns true if the NO_COLOR env var is set (https://no-color.org) or if
