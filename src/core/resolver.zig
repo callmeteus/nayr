@@ -132,8 +132,10 @@ pub const ResolverOptions = struct {
     force: bool = false,
     /// Include only devDependencies.
     dev_only: bool = false,
-    /// Maximum parallel metadata fetches per batch (curl --parallel-max).
-    concurrency: u32 = 128,
+    /// Number of packages per curl --parallel chunk.
+    /// Each chunk is one curl invocation; smaller values give more frequent
+    /// progress updates at the cost of slightly more process spawns.
+    concurrency: u32 = 32,
 };
 
 // ============================================================================
@@ -436,105 +438,119 @@ pub fn resolve(
 
         if (pending_batch.items.len == 0) break;
 
-        // --- Dispatch the wave's registry batch ---
+        // --- Dispatch the wave's registry requests in chunks ---
         //
-        // Build the BatchItem slice (name + optional flag) for the client and
-        // run one curl --parallel invocation for ALL items in this wave.
-        const batch_items = try allocator.alloc(registry_client.BatchItem, pending_batch.items.len);
-        defer allocator.free(batch_items);
-        for (pending_batch.items, batch_items) |pf, *bi| {
-            bi.* = .{ .name = pf.name, .optional = pf.optional };
-        }
+        // Each chunk is one curl --parallel invocation.  Processing results
+        // after each chunk (rather than after the whole wave) keeps the
+        // progress bar updating incrementally so the install never appears
+        // frozen.  Chunk size = opts.concurrency (default 32) — small enough
+        // to avoid overwhelming private registries and large enough that the
+        // per-spawn overhead stays negligible.
 
-        const batch_results = try registry_client.fetchMetadataBatch(allocator, batch_items, config);
-        defer {
-            for (batch_results) |*r| if (r.meta) |*m| m.deinit(allocator);
-            allocator.free(batch_results);
-        }
+        const chunk_size: usize = @intCast(opts.concurrency);
+        var chunk_start: usize = 0;
 
-        for (batch_results, pending_batch.items) |*result, pf| {
-            if (result.err) |err| {
-                if (pf.optional) continue;
-                std.io.getStdErr().writer().print(
-                    "  warn  failed to resolve package: {s}\n",
-                    .{pf.name},
-                ) catch {};
-                return err;
+        while (chunk_start < pending_batch.items.len) {
+            const chunk_end = @min(chunk_start + chunk_size, pending_batch.items.len);
+            const chunk = pending_batch.items[chunk_start..chunk_end];
+            chunk_start = chunk_end;
+
+            const batch_items = try allocator.alloc(registry_client.BatchItem, chunk.len);
+            defer allocator.free(batch_items);
+            for (chunk, batch_items) |pf, *bi| {
+                bi.* = .{ .name = pf.name, .optional = pf.optional };
             }
 
-            const meta = result.meta orelse continue;
+            const batch_results = try registry_client.fetchMetadataBatch(allocator, batch_items, config);
+            defer {
+                for (batch_results) |*r| if (r.meta) |*m| m.deinit(allocator);
+                allocator.free(batch_results);
+            }
 
-            var version_strs = try std.ArrayList([]const u8).initCapacity(
-                allocator,
-                meta.versions.count(),
-            );
-            defer version_strs.deinit();
-            var v_it = meta.versions.keyIterator();
-            while (v_it.next()) |k| try version_strs.append(k.*);
-
-            const latest = meta.dist_tags.get("latest");
-            const best_ver = semver.maxSatisfying(
-                allocator,
-                version_strs.items,
-                pf.eff_range,
-                latest,
-            ) orelse {
-                if (pf.optional) continue;
-                std.io.getStdErr().writer().print(
-                    "  warn  no version of {s} satisfies range \"{s}\"\n",
-                    .{ pf.name, pf.eff_range },
-                ) catch {};
-                return error.NoMatchingVersion;
-            };
-
-            const ver_info = meta.versions.get(best_ver).?;
-
-            const key = try std.fmt.allocPrint(
-                allocator,
-                "{s}@{s}",
-                .{ pf.name, ver_info.version },
-            );
-
-            // Record range → resolved key for lockfile pattern generation.
-            {
-                const rtk_pat = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ pf.name, pf.eff_range });
-                const rtk_val = try allocator.dupe(u8, key);
-                const gop = try range_to_key.getOrPut(allocator, rtk_pat);
-                if (gop.found_existing) {
-                    allocator.free(rtk_pat);
-                    allocator.free(gop.value_ptr.*);
+            for (batch_results, chunk) |*result, pf| {
+                if (result.err) |err| {
+                    if (pf.optional) continue;
+                    std.io.getStdErr().writer().print(
+                        "  warn  failed to resolve package: {s}\n",
+                        .{pf.name},
+                    ) catch {};
+                    return err;
                 }
-                gop.value_ptr.* = rtk_val;
-            }
 
-            if (resolved_set.contains(key)) {
-                allocator.free(key);
+                const meta = result.meta orelse continue;
+
+                var version_strs = try std.ArrayList([]const u8).initCapacity(
+                    allocator,
+                    meta.versions.count(),
+                );
+                defer version_strs.deinit();
+                var v_it = meta.versions.keyIterator();
+                while (v_it.next()) |k| try version_strs.append(k.*);
+
+                const latest = meta.dist_tags.get("latest");
+                const best_ver = semver.maxSatisfying(
+                    allocator,
+                    version_strs.items,
+                    pf.eff_range,
+                    latest,
+                ) orelse {
+                    if (pf.optional) continue;
+                    std.io.getStdErr().writer().print(
+                        "  warn  no version of {s} satisfies range \"{s}\"\n",
+                        .{ pf.name, pf.eff_range },
+                    ) catch {};
+                    return error.NoMatchingVersion;
+                };
+
+                const ver_info = meta.versions.get(best_ver).?;
+
+                const key = try std.fmt.allocPrint(
+                    allocator,
+                    "{s}@{s}",
+                    .{ pf.name, ver_info.version },
+                );
+
+                // Record range → resolved key for lockfile pattern generation.
+                {
+                    const rtk_pat = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ pf.name, pf.eff_range });
+                    const rtk_val = try allocator.dupe(u8, key);
+                    const gop = try range_to_key.getOrPut(allocator, rtk_pat);
+                    if (gop.found_existing) {
+                        allocator.free(rtk_pat);
+                        allocator.free(gop.value_ptr.*);
+                    }
+                    gop.value_ptr.* = rtk_val;
+                }
+
+                if (resolved_set.contains(key)) {
+                    allocator.free(key);
+                    try enqueueMapDeps(allocator, &queue, &ver_info.dependencies, false);
+                    try enqueueMapDeps(allocator, &queue, &ver_info.optional_dependencies, opts.ignore_optional);
+                    continue;
+                }
+
+                const rp = ResolvedPackage{
+                    .name = try allocator.dupe(u8, pf.name),
+                    .version = try allocator.dupe(u8, ver_info.version),
+                    .tarball_url = try allocator.dupe(u8, ver_info.tarball),
+                    .integrity = try allocator.dupe(u8, ver_info.integrity),
+                    .registry = try allocator.dupe(u8, config.getRegistry(extractScope(pf.name))),
+                    .is_workspace = false,
+                    .is_git = false,
+                    .dependencies = try copyStringMap(allocator, &ver_info.dependencies),
+                    .optional_dependencies = try copyStringMap(allocator, &ver_info.optional_dependencies),
+                };
+                try resolved_set.put(allocator, key, rp);
+
                 try enqueueMapDeps(allocator, &queue, &ver_info.dependencies, false);
                 try enqueueMapDeps(allocator, &queue, &ver_info.optional_dependencies, opts.ignore_optional);
-                continue;
+
+                writer.emit(.{ .resolve_progress = .{
+                    .resolved = @intCast(resolved_set.count()),
+                    .total = @intCast(queue.items.len),
+                    .name = rp.name,
+                } });
             }
-
-            const rp = ResolvedPackage{
-                .name = try allocator.dupe(u8, pf.name),
-                .version = try allocator.dupe(u8, ver_info.version),
-                .tarball_url = try allocator.dupe(u8, ver_info.tarball),
-                .integrity = try allocator.dupe(u8, ver_info.integrity),
-                .registry = try allocator.dupe(u8, config.getRegistry(extractScope(pf.name))),
-                .is_workspace = false,
-                .is_git = false,
-                .dependencies = try copyStringMap(allocator, &ver_info.dependencies),
-                .optional_dependencies = try copyStringMap(allocator, &ver_info.optional_dependencies),
-            };
-            try resolved_set.put(allocator, key, rp);
-
-            try enqueueMapDeps(allocator, &queue, &ver_info.dependencies, false);
-            try enqueueMapDeps(allocator, &queue, &ver_info.optional_dependencies, opts.ignore_optional);
-
-            writer.emit(.{ .resolve_progress = .{
-                .resolved = @intCast(resolved_set.count()),
-                .total = @intCast(queue.items.len),
-                .name = rp.name,
-            } });
         }
 
         pending_batch.clearRetainingCapacity();

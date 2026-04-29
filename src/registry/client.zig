@@ -105,10 +105,15 @@ pub fn fetchMetadataBatch(
     var argv = std.ArrayList([]const u8).init(allocator);
     defer argv.deinit();
 
+    // Set --parallel-max to the batch size so curl doesn't open MORE
+    // connections than there are requests (avoids wasted sockets).
+    const parallel_max_str = try std.fmt.allocPrint(allocator, "{d}", .{items.len});
+    defer allocator.free(parallel_max_str);
+
     try argv.appendSlice(&.{
         "curl",
         "-Z",                   // parallel transfers
-        "--parallel-max", "128",
+        "--parallel-max", parallel_max_str,
         "--http2",              // HTTP/2 multiplexing; falls back to HTTP/1.1
         "--silent",
         "--show-error",
