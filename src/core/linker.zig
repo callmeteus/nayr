@@ -94,7 +94,21 @@ pub fn link(
             const cache_dir = cache.extractedDir(hp.pkg.registry, hp.name, hp.version) catch continue;
             defer allocator.free(cache_dir);
 
-            try copyPackageDir(allocator, cache_dir, dest);
+            copyPackageDir(allocator, cache_dir, dest) catch |err| {
+                // Cache miss or I/O error: warn and skip. The dest directory was
+                // already cleaned up by copyPackageDir so no empty dir is left.
+                // The next `nayr install` will re-fetch the missing package.
+                const wmsg = std.fmt.allocPrint(
+                    allocator,
+                    "warn: failed to copy {s}@{s} from cache: {s}",
+                    .{ hp.name, hp.version, @errorName(err) },
+                ) catch null;
+                if (wmsg) |m| {
+                    defer allocator.free(m);
+                    writer.emit(.{ .warning = m });
+                }
+                continue;
+            };
 
             // Create .bin/ stubs for this package's executables.
             try linkBinEntries(allocator, bin_dir, dest, hp.name, writer);
@@ -169,6 +183,93 @@ pub fn repairBinStubs(
         const pkg_dir = try std.fs.path.join(allocator, &.{ node_modules, entry.name });
         defer allocator.free(pkg_dir);
         try linkBinEntries(allocator, bin_dir, pkg_dir, entry.name, writer);
+    }
+}
+
+// ============================================================================
+// Broken package repair
+// ============================================================================
+
+/// Removes empty or incomplete package directories from `node_modules/`.
+///
+/// A package directory is considered broken when it contains no `package.json`.
+/// This can happen when a previous install was interrupted after the directory
+/// was created but before its tarball was extracted, leaving an empty stub that
+/// fools the integrity check into thinking the package is present.
+///
+/// This pass runs before the integrity fast-path, so the missing directory
+/// will cause a hash mismatch → full reinstall on the next check.
+///
+/// ## Parameters
+/// - `allocator`: Scratch allocator.
+/// - `root_dir`: Absolute path to the project root.
+/// - `writer`: Output event sink (warnings only).
+pub fn repairBrokenPackages(
+    allocator: std.mem.Allocator,
+    root_dir: []const u8,
+    writer: output.Writer,
+) !void {
+    const node_modules = try std.fs.path.join(allocator, &.{ root_dir, "node_modules" });
+    defer allocator.free(node_modules);
+
+    var nm_dir = std.fs.openDirAbsolute(node_modules, .{ .iterate = true }) catch return;
+    defer nm_dir.close();
+
+    var iter = nm_dir.iterate();
+    while (try iter.next()) |entry| {
+        if (entry.name[0] == '.') continue;
+
+        if (entry.name[0] == '@') {
+            // Scoped package scope directory: check each package inside.
+            const scope_path = try std.fs.path.join(allocator, &.{ node_modules, entry.name });
+            defer allocator.free(scope_path);
+            var scope_dir = std.fs.openDirAbsolute(scope_path, .{ .iterate = true }) catch continue;
+            defer scope_dir.close();
+            var sit = scope_dir.iterate();
+            while (try sit.next()) |sub| {
+                if (sub.name[0] == '.') continue;
+                const pkg_dir = try std.fs.path.join(allocator, &.{ scope_path, sub.name });
+                defer allocator.free(pkg_dir);
+                // Skip symlinks (linked packages).
+                if (sub.kind == .sym_link) continue;
+                const manifest = try std.fs.path.join(allocator, &.{ pkg_dir, "package.json" });
+                defer allocator.free(manifest);
+                if ((std.fs.accessAbsolute(manifest, .{}) catch null) == null) {
+                    const full_name = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ entry.name, sub.name });
+                    defer allocator.free(full_name);
+                    const wmsg = std.fmt.allocPrint(
+                        allocator,
+                        "warn: removing broken package dir: {s}",
+                        .{full_name},
+                    ) catch null;
+                    if (wmsg) |m| {
+                        defer allocator.free(m);
+                        writer.emit(.{ .warning = m });
+                    }
+                    std.fs.deleteTreeAbsolute(pkg_dir) catch {};
+                }
+            }
+            continue;
+        }
+
+        const pkg_dir = try std.fs.path.join(allocator, &.{ node_modules, entry.name });
+        defer allocator.free(pkg_dir);
+        // Skip symlinks (linked packages).
+        if (entry.kind == .sym_link) continue;
+        const manifest = try std.fs.path.join(allocator, &.{ pkg_dir, "package.json" });
+        defer allocator.free(manifest);
+        if ((std.fs.accessAbsolute(manifest, .{}) catch null) == null) {
+            const wmsg = std.fmt.allocPrint(
+                allocator,
+                "warn: removing broken package dir: {s}",
+                .{entry.name},
+            ) catch null;
+            if (wmsg) |m| {
+                defer allocator.free(m);
+                writer.emit(.{ .warning = m });
+            }
+            std.fs.deleteTreeAbsolute(pkg_dir) catch {};
+        }
     }
 }
 
@@ -264,11 +365,18 @@ fn installGitPackage(
 
 /// Copies all files from `src_dir` into `dest_dir` using hardlinks where
 /// possible (same filesystem) or copies otherwise.
+///
+/// If `src_dir` cannot be opened (e.g. cache miss), the already-created
+/// `dest_dir` is removed and the error is propagated so callers can warn and
+/// skip this package rather than leaving an empty directory in node_modules.
 fn copyPackageDir(allocator: std.mem.Allocator, src_dir: []const u8, dest_dir: []const u8) !void {
     std.fs.deleteTreeAbsolute(dest_dir) catch {};
     try fs_util.mkdirAllRecursive(allocator, dest_dir);
 
-    var src = std.fs.openDirAbsolute(src_dir, .{ .iterate = true }) catch return;
+    var src = std.fs.openDirAbsolute(src_dir, .{ .iterate = true }) catch |err| {
+        std.fs.deleteTreeAbsolute(dest_dir) catch {};
+        return err;
+    };
     defer src.close();
 
     try copyDirRecursive(allocator, &src, src_dir, dest_dir);

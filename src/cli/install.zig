@@ -117,6 +117,11 @@ pub fn run(
     // their stubs in place.
     linker_mod.repairBinStubs(allocator, cwd, writer) catch {};
 
+    // Repair broken packages: walk node_modules/ and remove any package
+    // directory that has no package.json (empty stub from a failed extraction).
+    // Removing it causes the integrity hash to miss the package → full reinstall.
+    linker_mod.repairBrokenPackages(allocator, cwd, writer) catch {};
+
     // Fast path: integrity check.
     if (!opts.force and !opts.check_files) {
         if (try integrity_mod.isUpToDate(allocator, cwd)) {
