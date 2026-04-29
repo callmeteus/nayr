@@ -55,6 +55,10 @@ pub const HoistedPackage = struct {
 /// - `allocator`: All result data is allocated here.
 /// - `packages`: The complete resolved package map from the resolver.
 /// - `checker`: Evaluates nohoist rules for each package.
+/// - `root_dep_ranges`: Direct dependency ranges declared in the root
+///   `package.json` (dependencies + devDependencies + optionalDependencies).
+///   These packages always win the root `node_modules` slot, regardless of
+///   how many transitive packages depend on a different version.
 ///
 /// ## Returns
 /// A flat slice of `HoistedPackage` entries. Caller owns the slice.
@@ -62,6 +66,7 @@ pub fn hoist(
     allocator: std.mem.Allocator,
     packages: *const std.StringHashMapUnmanaged(ResolvedPackage),
     checker: *const nohoist.NohoistChecker,
+    root_dep_ranges: *const std.StringHashMapUnmanaged([]const u8),
 ) ![]HoistedPackage {
     // Collect all packages into a workable slice.
     var pkgs = try std.ArrayList(*const ResolvedPackage).initCapacity(allocator, packages.count());
@@ -93,16 +98,49 @@ pub fn hoist(
     // -------------------------------------------------------------------------
     // Phase 2: Seeding - elect the root version for each package name.
     //
-    // Prefer the version with the highest dependent-count. Break ties by
-    // choosing the semantically newer version: the newer release satisfies a
-    // strict superset of ranges, so hoisting it to root minimises nesting.
+    // Phase 2a: Root direct dependencies always win their slot.  A package
+    // declared in the root package.json must appear at the root
+    // `node_modules/<name>` level so that the application's own imports
+    // resolve to the pinned version.  If a transitive dependency requires a
+    // DIFFERENT version of the same package, it is handled in Phase 4 via
+    // nesting — never by overriding the root's choice here.
+    //
+    // Phase 2b: For names not pinned by Phase 2a, elect the most-depended-on
+    // version (highest count).  Break ties by newness: a newer release
+    // satisfies a strict superset of ranges, minimising Phase 4 nesting.
     // -------------------------------------------------------------------------
     var root_versions = std.StringHashMapUnmanaged([]const u8){};
     defer root_versions.deinit(allocator);
 
+    // Phase 2a: pin root direct deps regardless of popularity.
+    {
+        var rdr_it = root_dep_ranges.iterator();
+        while (rdr_it.next()) |kv| {
+            const dep_name = kv.key_ptr.*;
+            const dep_range = kv.value_ptr.*;
+            // Find the highest resolved version that satisfies this range.
+            // The resolver always produces at most one matching version for a
+            // given root range, but we use a max-satisfying scan for safety.
+            var best: ?[]const u8 = null;
+            var scan_it = version_counts.iterator();
+            while (scan_it.next()) |scan_kv| {
+                const vc = scan_kv.value_ptr;
+                if (!std.mem.eql(u8, vc.name, dep_name)) continue;
+                if (!semver.satisfies(allocator, vc.version, dep_range)) continue;
+                if (best == null or semver.compareVersions(vc.version, best.?) == .gt) {
+                    best = vc.version;
+                }
+            }
+            if (best) |ver| try root_versions.put(allocator, dep_name, ver);
+        }
+    }
+
+    // Phase 2b: popularity+newness for packages not already pinned.
     var vc_it = version_counts.iterator();
     while (vc_it.next()) |kv| {
         const vc = kv.value_ptr;
+        // Skip names already pinned by Phase 2a.
+        if (root_versions.contains(vc.name)) continue;
         if (root_versions.get(vc.name)) |existing_ver| {
             const lookup_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ vc.name, existing_ver });
             defer allocator.free(lookup_key);

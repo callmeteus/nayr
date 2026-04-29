@@ -188,7 +188,28 @@ pub fn run(
     const nohoist_patterns = ws_discovery.nohoistPatterns(&root_manifest);
     const checker = nohoist_mod.NohoistChecker.init(nohoist_patterns);
 
-    const hoisted = try hoister_mod.hoist(allocator, &resolution.packages, &checker);
+    // Build the root direct-dep ranges map (name → range) for the hoister so
+    // that root-pinned packages always win their root node_modules slot over
+    // more-popular transitive packages that require a different version.
+    var root_dep_ranges = std.StringHashMapUnmanaged([]const u8){};
+    defer root_dep_ranges.deinit(allocator);
+    {
+        var di = root_manifest.dependencies.iterator();
+        while (di.next()) |kv| try root_dep_ranges.put(allocator, kv.key_ptr.*, kv.value_ptr.*);
+        var ddi = root_manifest.dev_dependencies.iterator();
+        while (ddi.next()) |kv| try root_dep_ranges.put(allocator, kv.key_ptr.*, kv.value_ptr.*);
+        var odi = root_manifest.optional_dependencies.iterator();
+        while (odi.next()) |kv| try root_dep_ranges.put(allocator, kv.key_ptr.*, kv.value_ptr.*);
+        // Include workspace package deps so that workspace-level pins also win.
+        for (workspaces) |*ws| {
+            var wdi = ws.manifest.dependencies.iterator();
+            while (wdi.next()) |kv| _ = try root_dep_ranges.getOrPutValue(allocator, kv.key_ptr.*, kv.value_ptr.*);
+            var wddi = ws.manifest.dev_dependencies.iterator();
+            while (wddi.next()) |kv| _ = try root_dep_ranges.getOrPutValue(allocator, kv.key_ptr.*, kv.value_ptr.*);
+        }
+    }
+
+    const hoisted = try hoister_mod.hoist(allocator, &resolution.packages, &checker, &root_dep_ranges);
     defer {
         for (hoisted) |hp| allocator.free(hp.install_path);
         allocator.free(hoisted);
