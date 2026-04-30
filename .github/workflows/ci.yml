@@ -9,7 +9,7 @@ on:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Unit tests (host platform only — fast feedback, runs before build)
+  # Unit tests (host platform only - fast feedback, runs before build)
   # ---------------------------------------------------------------------------
   test:
     name: Unit tests

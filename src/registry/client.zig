@@ -112,24 +112,30 @@ pub fn fetchMetadataBatch(
 
     try argv.appendSlice(&.{
         "curl",
-        "-Z",                   // parallel transfers
-        "--parallel-max", parallel_max_str,
-        "--http2",              // HTTP/2 multiplexing; falls back to HTTP/1.1
+        "-Z", // parallel transfers
+        "--parallel-max",
+        parallel_max_str,
+        "--http2", // HTTP/2 multiplexing; falls back to HTTP/1.1
         "--silent",
         "--show-error",
         "-L",
-        "--max-time", "120",
-        "--retry", "2",
-        "--retry-delay", "1",
+        "--max-time",
+        "120",
+        "--retry",
+        "2",
+        "--retry-delay",
+        "1",
         "--compressed",
-        "-A", "nayr/2.0.0",
-        "-H", "Accept: application/vnd.npm.install-v1+json",
+        "-A",
+        "nayr/2.0.0",
+        "-H",
+        "Accept: application/vnd.npm.install-v1+json",
     });
 
     // Determine the primary auth token from the first item's scope.
     // This covers the common single-registry setup.  When packages span
     // multiple registries the auth header is still correct for the majority
-    // of requests (npm public registry) and wrong only for private scopes —
+    // of requests (npm public registry) and wrong only for private scopes -
     // acceptable for now; per-URL auth is a future improvement.
     if (items.len > 0) {
         const first_scope = extractScope(items[0].name);
@@ -385,7 +391,7 @@ fn curlDownloadToFile(
     try buildCurlBaseArgs(&argv, auth_token);
     try argv.append("-o");
     try argv.append(dest_path); // output file before URL
-    try argv.append(url);       // URL last
+    try argv.append(url); // URL last
 
     // For file downloads we don't need to capture stdout (curl writes directly
     // to the file), but we still need to drain stderr and get the exit code.
@@ -419,8 +425,8 @@ fn buildCurlBaseArgs(
     try argv.append("curl");
     try argv.append("--silent");
     try argv.append("--show-error");
-    try argv.append("--fail");       // exit 22 on HTTP 4xx/5xx
-    try argv.append("-L");           // follow redirects
+    try argv.append("--fail"); // exit 22 on HTTP 4xx/5xx
+    try argv.append("-L"); // follow redirects
     try argv.append("--max-time");
     try argv.append("120");
     try argv.append("--retry");

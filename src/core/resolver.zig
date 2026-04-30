@@ -310,7 +310,7 @@ pub fn resolve(
                 // runtime dependencies. The deps are enqueued so that transitive
                 // requirements of the linked package (e.g. TypeScript) are
                 // installed in the consumer's node_modules and their bin stubs
-                // (e.g. .bin/tsc) are created — matching Yarn Classic behaviour.
+                // (e.g. .bin/tsc) are created - matching Yarn Classic behaviour.
                 const pkg_json_path = try std.fs.path.join(allocator, &.{ link_target, "package.json" });
                 defer allocator.free(pkg_json_path);
                 var local_manifest = json_util.parseFile(allocator, pkg_json_path) catch null;
@@ -443,7 +443,7 @@ pub fn resolve(
         // Each chunk is one curl --parallel invocation.  Processing results
         // after each chunk (rather than after the whole wave) keeps the
         // progress bar updating incrementally so the install never appears
-        // frozen.  Chunk size = opts.concurrency (default 32) — small enough
+        // frozen.  Chunk size = opts.concurrency (default 32) - small enough
         // to avoid overwhelming private registries and large enough that the
         // per-spawn overhead stays negligible.
 
@@ -854,7 +854,7 @@ fn extractGitOrgRepo(url: []const u8) [2][]const u8 {
     // github.com/org/repo or https://github.com/org/repo
     const gh_prefix = "github.com/";
     const start = std.mem.indexOf(u8, url, gh_prefix) orelse return .{ "", "" };
-    const rest = url[start + gh_prefix.len..];
+    const rest = url[start + gh_prefix.len ..];
     const slash = std.mem.indexOfScalar(u8, rest, '/') orelse return .{ rest, "" };
     return .{ rest[0..slash], rest[slash + 1 ..] };
 }

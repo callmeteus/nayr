@@ -117,7 +117,7 @@ pub fn run(
         else
             config.save_prefix;
 
-        // range goes into the JSON tree — use json arena so parsed.deinit() frees it.
+        // range goes into the JSON tree - use json arena so parsed.deinit() frees it.
         const range: []const u8 = if (std.mem.eql(u8, requested_ver, "latest"))
             try std.fmt.allocPrint(ja, "{s}*", .{prefix})
         else

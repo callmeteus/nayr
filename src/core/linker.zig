@@ -137,7 +137,7 @@ pub fn link(
 /// the integrity file was stale, or `.bin/` was manually cleaned.
 ///
 /// Only root-level packages are processed; nested `node_modules` (inside
-/// package directories) are not touched — matching Yarn Classic behaviour.
+/// package directories) are not touched - matching Yarn Classic behaviour.
 ///
 /// ## Parameters
 /// - `allocator`: Scratch allocator.
@@ -281,7 +281,7 @@ pub fn repairBrokenPackages(
 ///
 /// Preserves an existing clone to avoid re-cloning on every install run.
 /// The presence of a `.git` subdirectory is used as the "already installed"
-/// sentinel — consistent with how `git clone` leaves the directory.
+/// sentinel - consistent with how `git clone` leaves the directory.
 ///
 /// On failure (git not in PATH, network error, etc.) a warning is emitted
 /// and the function returns without error so the rest of the install continues.

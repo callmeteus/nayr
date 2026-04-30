@@ -125,7 +125,7 @@ pub fn buildNameMap(
 /// Nohoist patterns are only meaningful when there are actual workspace packages
 /// declared under `packages`. When the list is empty (e.g. a standalone project
 /// that only has `workspaces: { nohoist: ["**"] }` without any workspace members),
-/// Yarn Classic silently ignores nohoist — nayr matches that behaviour so that
+/// Yarn Classic silently ignores nohoist - nayr matches that behaviour so that
 /// patterns like `**` don't accidentally block every dependency from being
 /// hoisted to the root `node_modules`.
 ///

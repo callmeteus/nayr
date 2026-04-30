@@ -435,7 +435,7 @@ done
 # Output results
 # ---------------------------------------------------------------------------
 if [ "$JSON_OUTPUT" = "0" ]; then
-    printf "\n${BOLD}Results — fixture: %s (median of %d runs):${RESET}\n\n" "$FIXTURE" "$RUNS"
+    printf "\n${BOLD}Results - fixture: %s (median of %d runs):${RESET}\n\n" "$FIXTURE" "$RUNS"
 
     if [ "$SKIP_PNPM" = "0" ] && [ "$SKIP_YARN" = "0" ]; then
         printf "  %-8s  %-5s  %-8s  %-12s  %-10s  %-10s  %-10s  %-16s  %s\n" \

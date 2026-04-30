@@ -23,11 +23,11 @@ Yarn Classic is slow and ships a massive JavaScript runtime just to move files a
 
 ## Benchmarks
 
-> Same methodology as [pnpm.io/benchmarks](https://pnpm.io/benchmarks).  
-> Machine: Ubuntu 24.04 LTS, Intel i7-13650HX (20 threads), NVMe SSD.  
+> Same methodology as [pnpm.io/benchmarks](https://pnpm.io/benchmarks).
+> Machine: Ubuntu 24.04 LTS, Intel i7-13650HX (20 threads), NVMe SSD.
 > Run your own: `bash tests/bench/bench.sh --runs 3 [--fixture simple|workspace|alotta-files]`
 
-### Simple fixture (`lodash`, `ms`, `is-odd`) — median of 3 runs
+### Simple fixture (`lodash`, `ms`, `is-odd`) - median of 3 runs
 
 | action  | cache | lockfile | node_modules | nayr | pnpm 10 | yarn 1.22 |
 |---------|-------|----------|--------------|------|---------|-----------|
@@ -41,7 +41,7 @@ Yarn Classic is slow and ships a massive JavaScript runtime just to move files a
 | install |       | ✔       |              | 418 ms | 904 ms | 1042 ms |
 | update  | n/a   | n/a      | n/a          | 443 ms | 845 ms | 1056 ms |
 
-### alotta-files fixture (~100 deps, same as pnpm's own benchmark) — median of 2 runs
+### alotta-files fixture (~100 deps, same as pnpm's own benchmark) - median of 2 runs
 
 > Cache-dependent scenarios (clean, nm, lf) are network-bound and vary by connection.
 

@@ -103,7 +103,7 @@ pub fn hoist(
     // `node_modules/<name>` level so that the application's own imports
     // resolve to the pinned version.  If a transitive dependency requires a
     // DIFFERENT version of the same package, it is handled in Phase 4 via
-    // nesting — never by overriding the root's choice here.
+    // nesting - never by overriding the root's choice here.
     //
     // Phase 2b: For names not pinned by Phase 2a, elect the most-depended-on
     // version (highest count).  Break ties by newness: a newer release

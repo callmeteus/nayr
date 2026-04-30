@@ -138,14 +138,16 @@ pub fn runAdd(
         const name, const ver = splitSpec(spec);
         const prefix: []const u8 = if (exact) "" else config.save_prefix;
 
-        // range goes into the JSON tree — use json arena.
+        // range goes into the JSON tree - use json arena.
         const range: []const u8 = if (std.mem.eql(u8, ver, "latest"))
             try ja.dupe(u8, "*")
         else
             try std.fmt.allocPrint(ja, "{s}{s}", .{ prefix, ver });
 
         writer.emit(.{ .info = try std.fmt.allocPrint(
-            la, "Adding {s}@{s} to global {s}", .{ name, range, dep_key },
+            la,
+            "Adding {s}@{s} to global {s}",
+            .{ name, range, dep_key },
         ) });
 
         // Ensure the target key exists, then insert. Both key and value use
@@ -213,7 +215,9 @@ pub fn runRemove(
             }
         }
         writer.emit(.{ .info = try std.fmt.allocPrint(
-            allocator, "Removing {s} from global packages", .{pkg_name},
+            allocator,
+            "Removing {s} from global packages",
+            .{pkg_name},
         ) });
     }
 
@@ -299,7 +303,8 @@ fn runList(allocator: std.mem.Allocator, writer: output.Writer) !void {
 
             const version = blk: {
                 const nm_pkg = try std.fs.path.join(
-                    a, &.{ global_dir, "node_modules", name, "package.json" },
+                    a,
+                    &.{ global_dir, "node_modules", name, "package.json" },
                 );
                 const f = std.fs.openFileAbsolute(nm_pkg, .{}) catch break :blk range;
                 defer f.close();
@@ -392,7 +397,8 @@ fn syncGlobalBins(
     const a = arena.allocator();
 
     const bin_src = try std.fs.path.join(
-        a, &.{ global_dir, "node_modules", ".bin" },
+        a,
+        &.{ global_dir, "node_modules", ".bin" },
     );
     const bin_dst = try platform.getGlobalBinDir(a);
 
@@ -463,27 +469,35 @@ fn checkPath(
         if (in_rc) {
             // Already in the rc file but not yet active - just remind once.
             writer.emit(.{ .info = try std.fmt.allocPrint(
-                a, "Run `source {s}` or open a new terminal to use global binaries.", .{rc},
+                a,
+                "Run `source {s}` or open a new terminal to use global binaries.",
+                .{rc},
             ) });
         } else {
             // Append the export line.
             const export_line = try std.fmt.allocPrint(
-                a, "\nexport PATH=\"{s}:$PATH\"\n", .{bin_dir},
+                a,
+                "\nexport PATH=\"{s}:$PATH\"\n",
+                .{bin_dir},
             );
             const f = std.fs.openFileAbsolute(rc, .{ .mode = .read_write }) catch
                 std.fs.createFileAbsolute(rc, .{}) catch {
-                    fallbackPathWarning(writer, a, bin_dir);
-                    return;
-                };
+                fallbackPathWarning(writer, a, bin_dir);
+                return;
+            };
             defer f.close();
             try f.seekFromEnd(0);
             try f.writeAll(export_line);
 
             writer.emit(.{ .info = try std.fmt.allocPrint(
-                a, "Added {s} to PATH in {s}", .{ bin_dir, rc },
+                a,
+                "Added {s} to PATH in {s}",
+                .{ bin_dir, rc },
             ) });
             writer.emit(.{ .info = try std.fmt.allocPrint(
-                a, "Run `source {s}` or open a new terminal to apply.", .{rc},
+                a,
+                "Run `source {s}` or open a new terminal to apply.",
+                .{rc},
             ) });
         }
     } else {

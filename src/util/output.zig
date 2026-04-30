@@ -236,7 +236,7 @@ const TuiWriter = struct {
     /// **Key invariant**: when `progress_lines >= 2`, line 2 was written
     /// WITHOUT a trailing `\n`, so the cursor is still somewhere on that line.
     /// `\r` brings it to column 0, `\x1b[1A` moves up to line 1, and
-    /// `\x1b[0J` erases everything to end-of-screen — all without causing
+    /// `\x1b[0J` erases everything to end-of-screen - all without causing
     /// the terminal to scroll.
     fn clearProgress(self: *TuiWriter) void {
         if (self.progress_lines == 0) return;
@@ -318,7 +318,7 @@ const TuiWriter = struct {
         }
         w.writeByte('\n') catch {};
 
-        // ── Line 2: NO trailing \n — cursor stays here, no scroll ─────────────
+        // ── Line 2: NO trailing \n - cursor stays here, no scroll ─────────────
         w.print("    overall   {s}  \x1b[2m{d}%  [{d}/4]\x1b[0m", .{
             overall_bar[0..], overall_pct, phase,
         }) catch {};
