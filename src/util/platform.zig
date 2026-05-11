@@ -273,6 +273,14 @@ pub fn createBinStub(allocator: std.mem.Allocator, bin_dir: []const u8, name: []
         fs.deleteTreeAbsolute(link_path) catch {};
     };
 
+    // Ensure the target file is executable. npm tarballs frequently omit the
+    // execute bit on .js binaries even when they declare a shebang; the shell
+    // refuses to run them ("Permission denied") unless we set +x here.
+    if (fs.openFileAbsolute(target, .{})) |f| {
+        defer f.close();
+        f.chmod(0o755) catch {};
+    } else |_| {}
+
     // Compute a relative target path from bin_dir to target.
     // Relative symlinks are portable (survive project directory moves) and
     // match the behaviour of Yarn Classic and npm.
