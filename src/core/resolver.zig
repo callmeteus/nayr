@@ -398,6 +398,19 @@ pub fn resolve(
             // 3. Git dependency (serial - uncommon).
             if (isGitDep(effective_range)) {
                 if (opts.frozen_lockfile) return error.FrozenLockfileChanged;
+
+                // Security: git host allow-list.
+                if (!config.isGitHostAllowed(effective_range)) {
+                    const msg = try std.fmt.allocPrint(
+                        allocator,
+                        "security: git source not in allowed-git-hosts: {s} (required by {s})",
+                        .{ effective_range, req.name },
+                    );
+                    defer allocator.free(msg);
+                    std.io.getStdErr().writer().print("  error  {s}\n", .{msg}) catch {};
+                    return error.GitHostNotAllowed;
+                }
+
                 const rp = try resolveGitDep(allocator, req.name, effective_range, config);
                 const key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ rp.name, rp.version });
 
@@ -429,6 +442,23 @@ pub fn resolve(
 
             // 4. Registry - defer to the wave's batch.
             if (opts.frozen_lockfile) return error.FrozenLockfileChanged;
+
+            // Security: registry allow-list.
+            {
+                const registry_url = config.getRegistry(extractScope(req.name));
+                if (!config.isRegistryAllowed(registry_url)) {
+                    if (req.optional) continue;
+                    const msg = try std.fmt.allocPrint(
+                        allocator,
+                        "security: registry not in allowed-registries: {s} (required by {s})",
+                        .{ registry_url, req.name },
+                    );
+                    defer allocator.free(msg);
+                    std.io.getStdErr().writer().print("  error  {s}\n", .{msg}) catch {};
+                    return error.RegistryNotAllowed;
+                }
+            }
+
             try pending_batch.append(.{
                 .name = req.name,
                 .eff_range = effective_range,
@@ -487,6 +517,29 @@ pub fn resolve(
                 var v_it = meta.versions.keyIterator();
                 while (v_it.next()) |k| try version_strs.append(k.*);
 
+                // Security: minimum package age filter.
+                // Remove versions that were published too recently.
+                if (config.minimum_package_age_seconds > 0) {
+                    const now_secs = std.time.timestamp();
+                    const min_age: i64 = @intCast(config.minimum_package_age_seconds);
+                    const cutoff = now_secs - min_age;
+                    var i: usize = 0;
+                    while (i < version_strs.items.len) {
+                        const ver = version_strs.items[i];
+                        const vi = meta.versions.get(ver) orelse {
+                            i += 1;
+                            continue;
+                        };
+                        // published_at == 0 means no timing info; allow it to be
+                        // conservative (don't block packages with no timestamp).
+                        if (vi.published_at > 0 and vi.published_at > cutoff) {
+                            _ = version_strs.swapRemove(i);
+                        } else {
+                            i += 1;
+                        }
+                    }
+                }
+
                 const latest = meta.dist_tags.get("latest");
                 const best_ver = semver.maxSatisfying(
                     allocator,
@@ -495,6 +548,20 @@ pub fn resolve(
                     latest,
                 ) orelse {
                     if (pf.optional) continue;
+                    // Check if there IS a satisfying version but it was too new.
+                    if (config.minimum_package_age_seconds > 0) {
+                        var all_strs = try std.ArrayList([]const u8).initCapacity(allocator, meta.versions.count());
+                        defer all_strs.deinit();
+                        var all_it = meta.versions.keyIterator();
+                        while (all_it.next()) |k| try all_strs.append(k.*);
+                        if (semver.maxSatisfying(allocator, all_strs.items, pf.eff_range, latest) != null) {
+                            std.io.getStdErr().writer().print(
+                                "  error  security: all versions of {s} satisfying \"{s}\" were published within the last {d}s\n",
+                                .{ pf.name, pf.eff_range, config.minimum_package_age_seconds },
+                            ) catch {};
+                            return error.PackageTooNew;
+                        }
+                    }
                     std.io.getStdErr().writer().print(
                         "  warn  no version of {s} satisfies range \"{s}\"\n",
                         .{ pf.name, pf.eff_range },

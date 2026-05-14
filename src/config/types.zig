@@ -105,6 +105,35 @@ pub const Config = struct {
     /// E.g. `["@lemon/*", "@luckymaker/*"]`.
     auto_link_patterns: []const []const u8 = &.{},
 
+    // --- Security policy (from .nayrrc [security]) ---
+
+    /// Minimum number of seconds a package version must have been published
+    /// before nayr will resolve it.  Prevents "package planting" attacks where
+    /// a malicious package is published and immediately picked up by CI.
+    ///
+    /// Default: 86400 (24 hours).  Set to 0 to disable.
+    minimum_package_age_seconds: u64 = 86400,
+
+    /// Registry URL allow-list.  Each entry is a glob pattern matched against
+    /// the registry URL (scheme-stripped for convenience):
+    ///
+    ///   `"registry.npmjs.org"`        – exact host
+    ///   `"*.npmjs.org"`               – any npmjs.org subdomain
+    ///   `"npm.arpa*"`                 – private registry prefix
+    ///
+    /// `null` (the default) means ALL registries are permitted.
+    allowed_registries: ?[]const []const u8 = null,
+
+    /// Git host / URL allow-list.  Each entry is a glob pattern matched against
+    /// the scheme-stripped git URL, e.g.:
+    ///
+    ///   `"github.com"`                – any repo on GitHub
+    ///   `"github.com/edjdigital/*"`   – only repos in one org
+    ///   `"gitlab.com"`                – any repo on GitLab
+    ///
+    /// `null` (the default) means ALL git sources are permitted.
+    allowed_git_hosts: ?[]const []const u8 = null,
+
     /// Email address (from `.yarnrc`).
     email: ?[]const u8 = null,
 
@@ -167,6 +196,16 @@ pub const Config = struct {
         for (self.auto_link_patterns) |s| self.allocator.free(s);
         if (self.auto_link_patterns.len > 0) self.allocator.free(self.auto_link_patterns);
 
+        // Free security allow-lists.
+        if (self.allowed_registries) |ar| {
+            for (ar) |s| self.allocator.free(s);
+            self.allocator.free(ar);
+        }
+        if (self.allowed_git_hosts) |ag| {
+            for (ag) |s| self.allocator.free(s);
+            self.allocator.free(ag);
+        }
+
         // Free registry URL if it was duped (not the default literal).
         const default_registry = "https://registry.npmjs.org";
         if (!std.mem.eql(u8, self.registry, default_registry)) {
@@ -177,6 +216,44 @@ pub const Config = struct {
     // -------------------------------------------------------------------------
     // Lookups
     // -------------------------------------------------------------------------
+
+    /// Returns true when `registry_url` is permitted by the configured
+    /// `allowed_registries` list.
+    ///
+    /// The URL is matched against each pattern both as-is and with its scheme
+    /// stripped (`https://`, `http://`), so patterns like `"registry.npmjs.org"`
+    /// match `"https://registry.npmjs.org"` without requiring the scheme.
+    ///
+    /// Returns true unconditionally when `allowed_registries` is null.
+    pub fn isRegistryAllowed(self: *const Config, registry_url: []const u8) bool {
+        const patterns = self.allowed_registries orelse return true;
+        const stripped = stripScheme(registry_url);
+        for (patterns) |pat| {
+            if (globMatchSimple(pat, registry_url) or globMatchSimple(pat, stripped)) return true;
+        }
+        return false;
+    }
+
+    /// Returns true when `git_url` is permitted by the configured
+    /// `allowed_git_hosts` list.
+    ///
+    /// The URL is matched after stripping any `git+` prefix and its URL scheme,
+    /// leaving e.g. `github.com/edjdigital/repo.git`, so patterns like
+    /// `"github.com/edjdigital/*"` work naturally.
+    ///
+    /// Returns true unconditionally when `allowed_git_hosts` is null.
+    pub fn isGitHostAllowed(self: *const Config, git_url: []const u8) bool {
+        const patterns = self.allowed_git_hosts orelse return true;
+        // Strip "git+" prefix, then URL scheme.
+        const no_git_plus = if (std.mem.startsWith(u8, git_url, "git+")) git_url[4..] else git_url;
+        const stripped = stripScheme(no_git_plus);
+        for (patterns) |pat| {
+            if (globMatchSimple(pat, git_url) or
+                globMatchSimple(pat, no_git_plus) or
+                globMatchSimple(pat, stripped)) return true;
+        }
+        return false;
+    }
 
     /// Returns the registry URL for the given npm scope, or the default
     /// registry if no scoped mapping exists.
@@ -259,9 +336,52 @@ pub const Config = struct {
     }
 };
 
-/// Strips the scheme (https://, http://) from a URL for host comparison.
+/// Strips the scheme (https://, http://, git://, ssh://) from a URL.
 fn stripScheme(url: []const u8) []const u8 {
     if (std.mem.startsWith(u8, url, "https://")) return url[8..];
     if (std.mem.startsWith(u8, url, "http://")) return url[7..];
+    if (std.mem.startsWith(u8, url, "git://")) return url[6..];
+    if (std.mem.startsWith(u8, url, "ssh://")) return url[6..];
     return url;
+}
+
+/// Minimal glob matcher supporting `*` (any chars, no `/`) and `**` (any chars
+/// including `/`).  Used for registry / git-host allow-list matching.
+fn globMatchSimple(pattern: []const u8, str: []const u8) bool {
+    var pi: usize = 0;
+    var si: usize = 0;
+
+    while (pi < pattern.len and si < str.len) {
+        if (pi + 1 < pattern.len and pattern[pi] == '*' and pattern[pi + 1] == '*') {
+            if (pi + 2 >= pattern.len) return true;
+            const rest = pattern[pi + 2 ..];
+            var i = si;
+            while (i <= str.len) : (i += 1) {
+                if (globMatchSimple(rest, str[i..])) return true;
+            }
+            return false;
+        } else if (pattern[pi] == '*') {
+            if (pi + 1 >= pattern.len) {
+                return std.mem.indexOfScalar(u8, str[si..], '/') == null;
+            }
+            var i = si;
+            while (i <= str.len) : (i += 1) {
+                if (str[i - 1 .. i - 1].len > 0 and str[i - 1] == '/') break;
+                if (globMatchSimple(pattern[pi + 1 ..], str[i..])) return true;
+                if (i == str.len) break;
+                if (str[i] == '/') break;
+            }
+            return false;
+        } else if (pattern[pi] == '?') {
+            pi += 1;
+            si += 1;
+        } else {
+            if (pattern[pi] != str[si]) return false;
+            pi += 1;
+            si += 1;
+        }
+    }
+
+    while (pi < pattern.len and (pattern[pi] == '*')) pi += 1;
+    return pi == pattern.len and si == str.len;
 }

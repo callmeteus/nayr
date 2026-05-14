@@ -55,6 +55,9 @@ pub const VersionInfo = struct {
     integrity: []const u8 = "",
     /// Unpacked size in bytes (for progress reporting).
     unpacked_size: u64 = 0,
+    /// Unix timestamp (seconds, UTC) when this version was published.
+    /// Populated from the npm registry `time` map.  Zero when unavailable.
+    published_at: i64 = 0,
     /// Runtime dependencies (name → range).
     dependencies: std.StringHashMapUnmanaged([]const u8) = .{},
     /// Optional dependencies.

@@ -8,6 +8,7 @@
 //!
 //!   [registry.<name>]    - private registry configuration
 //!   [git]                - git dependency hash pinning behaviour
+//!   [security]           - supply-chain security policies
 //!
 //! Example:
 //!
@@ -21,6 +22,15 @@
 //! pin-hash = true
 //! no-pin-orgs = ["edjdigital"]
 //! no-pin-repos = ["edjdigital/lemon-linting"]
+//!
+//! [security]
+//! # Minimum age (in seconds or human string) a package version must have
+//! # before nayr resolves it.  "0" disables the check.
+//! minimum-package-age = "24h"
+//! # Registries allowed to serve packages (glob patterns, scheme optional).
+//! allowed-registries = ["registry.npmjs.org", "npm.arpa*"]
+//! # Git hosts / URL prefixes allowed as git dependencies.
+//! allowed-git-hosts = ["github.com/edjdigital/*", "github.com/callmeteus/*"]
 //! ```
 
 const std = @import("std");
@@ -106,6 +116,8 @@ const NayrrcParser = struct {
                 try applyGitKey(config, key, raw_val, overwrite, self.allocator);
             } else if (std.mem.eql(u8, self.current_section, "links")) {
                 try applyLinksKey(config, key, raw_val, overwrite, self.allocator);
+            } else if (std.mem.eql(u8, self.current_section, "security")) {
+                try applySecurityKey(config, key, raw_val, overwrite, self.allocator);
             }
         }
         // Flush final registry section.
@@ -250,6 +262,67 @@ fn applyLinksKey(
     }
     new_slice[new_len - 1] = pattern;
     config.auto_link_patterns = new_slice;
+}
+
+// ============================================================================
+// Security section handler
+// ============================================================================
+
+fn applySecurityKey(
+    config: *Config,
+    key: []const u8,
+    raw_val: []const u8,
+    overwrite: bool,
+    allocator: std.mem.Allocator,
+) !void {
+    const val = stripQuotes(raw_val);
+
+    if (std.mem.eql(u8, key, "minimum-package-age")) {
+        if (overwrite) config.minimum_package_age_seconds = parseAgeString(val);
+    } else if (std.mem.eql(u8, key, "allowed-registries")) {
+        if (overwrite or config.allowed_registries == null) {
+            if (config.allowed_registries) |ar| {
+                for (ar) |s| allocator.free(s);
+                allocator.free(ar);
+            }
+            const arr = try parseStringArray(allocator, val);
+            config.allowed_registries = if (arr.len > 0) arr else null;
+        }
+    } else if (std.mem.eql(u8, key, "allowed-git-hosts")) {
+        if (overwrite or config.allowed_git_hosts == null) {
+            if (config.allowed_git_hosts) |ag| {
+                for (ag) |s| allocator.free(s);
+                allocator.free(ag);
+            }
+            const arr = try parseStringArray(allocator, val);
+            config.allowed_git_hosts = if (arr.len > 0) arr else null;
+        }
+    }
+}
+
+/// Parses a human-readable age string to seconds.
+///
+/// Supported formats:
+///   `"0"`    → 0 (disabled)
+///   `"30m"`  → 1800
+///   `"24h"`  → 86400
+///   `"1d"`   → 86400
+///   `"7d"`   → 604800
+///   `"3600"` → 3600 (bare number treated as seconds)
+fn parseAgeString(s: []const u8) u64 {
+    const t = std.mem.trim(u8, s, " \t");
+    if (t.len == 0) return 0;
+    if (t[t.len - 1] == 'h') {
+        const n = std.fmt.parseInt(u64, t[0 .. t.len - 1], 10) catch return 0;
+        return n * 3600;
+    } else if (t[t.len - 1] == 'd') {
+        const n = std.fmt.parseInt(u64, t[0 .. t.len - 1], 10) catch return 0;
+        return n * 86400;
+    } else if (t[t.len - 1] == 'm') {
+        const n = std.fmt.parseInt(u64, t[0 .. t.len - 1], 10) catch return 0;
+        return n * 60;
+    }
+    return std.fmt.parseInt(u64, t, 10) catch 0;
 }
 
 // ============================================================================

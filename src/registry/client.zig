@@ -590,7 +590,64 @@ fn parseMetadata(allocator: std.mem.Allocator, body: []const u8) !PackageMetadat
         }
     }
 
+    // Back-fill published_at from the `time` map (npm registry includes this
+    // in both full and abbreviated packuments).
+    if (root.object.get("time")) |time_val| {
+        if (time_val == .object) {
+            var it = time_val.object.iterator();
+            while (it.next()) |kv| {
+                if (kv.value_ptr.* != .string) continue;
+                const ts = parseIso8601(kv.value_ptr.*.string);
+                if (ts == 0) continue;
+                if (meta.versions.getPtr(kv.key_ptr.*)) |vi| {
+                    vi.published_at = ts;
+                }
+            }
+        }
+    }
+
     return meta;
+}
+
+/// Parses an ISO 8601 UTC timestamp string to a Unix timestamp (seconds).
+///
+/// Accepts the format returned by the npm registry:
+///   `"2023-03-16T19:22:12.000Z"`
+///   `"2014-09-11T00:00:00.000Z"`
+///
+/// Returns 0 on any parse failure.
+fn parseIso8601(s: []const u8) i64 {
+    if (s.len < 19) return 0;
+    const year = std.fmt.parseInt(u32, s[0..4], 10) catch return 0;
+    if (s[4] != '-') return 0;
+    const month = std.fmt.parseInt(u32, s[5..7], 10) catch return 0;
+    if (s[7] != '-') return 0;
+    const day = std.fmt.parseInt(u32, s[8..10], 10) catch return 0;
+    if (s[10] != 'T') return 0;
+    const hour = std.fmt.parseInt(u32, s[11..13], 10) catch return 0;
+    if (s[13] != ':') return 0;
+    const min = std.fmt.parseInt(u32, s[14..16], 10) catch return 0;
+    if (s[16] != ':') return 0;
+    const sec = std.fmt.parseInt(u32, s[17..19], 10) catch return 0;
+
+    // Julian Day Number formula (proleptic Gregorian calendar).
+    const a: i64 = @intCast((14 - month) / 12);
+    const y: i64 = @as(i64, @intCast(year)) + 4800 - a;
+    const m: i64 = @as(i64, @intCast(month)) + 12 * a - 3;
+    const jdn: i64 = @as(i64, @intCast(day)) +
+        @divFloor(153 * m + 2, 5) +
+        365 * y +
+        @divFloor(y, 4) -
+        @divFloor(y, 100) +
+        @divFloor(y, 400) -
+        32045;
+
+    // Unix epoch starts at JDN 2440588 (1970-01-01).
+    const days_since_epoch = jdn - 2440588;
+    const time_of_day: i64 = @as(i64, @intCast(hour)) * 3600 +
+        @as(i64, @intCast(min)) * 60 +
+        @as(i64, @intCast(sec));
+    return days_since_epoch * 86400 + time_of_day;
 }
 
 /// Parses a single version entry from the metadata `versions` map.
