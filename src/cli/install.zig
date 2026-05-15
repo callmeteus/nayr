@@ -85,9 +85,10 @@ pub fn run(
         else => return err,
     };
 
-    // Auto-register this package as a global link if its name matches one of
-    // the glob patterns declared in `.nayrrc [links]`.
+    // Auto-register this package (and its workspace packages) as global links
+    // if their names match any pattern in `.nayrrc [links]`.
     if (config.auto_link_patterns.len > 0) {
+        // Root package.
         if (json_util.parseFile(allocator, pkg_json_path)) |manifest_val| {
             var manifest = manifest_val;
             defer manifest.deinit(allocator);
@@ -97,6 +98,26 @@ pub fn run(
                 }
             }
         } else |_| {}
+
+        // Workspace packages: register each one whose name matches a link
+        // pattern so that sibling repos can resolve them without an explicit
+        // `nayr link` at the monorepo root.
+        const workspaces_early = ws_discovery.discover(allocator, cwd) catch &.{};
+        defer {
+            for (workspaces_early) |*ws| {
+                var m = ws.manifest;
+                m.deinit(allocator);
+                allocator.free(ws.path);
+                allocator.free(ws.rel_path);
+            }
+            allocator.free(workspaces_early);
+        }
+        for (workspaces_early) |ws| {
+            const ws_name = ws.manifest.name orelse continue;
+            if (matchesAutoLinkPattern(ws_name, config.auto_link_patterns)) {
+                link_cmd.registerPackage(allocator, ws_name, ws.path, writer) catch {};
+            }
+        }
     }
 
     // Pre-install relink: apply any registered links for deps in this project.

@@ -31,6 +31,7 @@ const registry_cmd = @import("registry_cmd.zig");
 const login_cmd = @import("login.zig");
 const publish_cmd = @import("publish.zig");
 const global_cmd = @import("global.zig");
+const config_cmd = @import("config.zig");
 
 /// nayr version string - embedded from package.json at build time.
 pub const VERSION = build_options.version;
@@ -163,6 +164,8 @@ pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !void {
         try publish_cmd.run(allocator, cmd_args, opts.cwd, &config, writer);
     } else if (std.mem.eql(u8, cmd, "pack")) {
         try publish_cmd.runPack(allocator, cmd_args, opts.cwd, &config, writer);
+    } else if (std.mem.eql(u8, cmd, "config")) {
+        try config_cmd.run(allocator, cmd_args, opts.cwd, &config, writer);
     } else if (std.mem.eql(u8, cmd, "cache")) {
         try runCache(allocator, cmd_args, opts.cwd, &config, writer);
     } else if (std.mem.eql(u8, cmd, "run")) {

@@ -31,6 +31,29 @@ const VersionInfo = reg_types.VersionInfo;
 const builtin = @import("builtin");
 
 // ============================================================================
+// Registry error message propagation
+// ============================================================================
+
+/// Holds the last registry-returned error string (e.g. "no such package
+/// available") so the caller can emit it through the proper output channel
+/// instead of printing to stderr directly (which would corrupt the TUI).
+var last_registry_error_buf: [256]u8 = undefined;
+var last_registry_error_len: usize = 0;
+
+fn setLastRegistryError(msg: []const u8) void {
+    const n = @min(msg.len, last_registry_error_buf.len);
+    @memcpy(last_registry_error_buf[0..n], msg[0..n]);
+    last_registry_error_len = n;
+}
+
+/// Returns the last registry error message, or an empty slice if none.
+pub fn takeLastRegistryError() []const u8 {
+    const s = last_registry_error_buf[0..last_registry_error_len];
+    last_registry_error_len = 0;
+    return s;
+}
+
+// ============================================================================
 // Batch fetch API
 // ============================================================================
 
@@ -555,6 +578,17 @@ fn parseMetadata(allocator: std.mem.Allocator, body: []const u8) !PackageMetadat
 
     const root = parsed.value;
     if (root != .object) return error.InvalidMetadata;
+
+    // npm error responses look like {"error":"Not found"} — propagate the
+    // message via the RegistryErrorMsg sentinel so the resolver can surface
+    // it through the proper output channel (which clears the progress bar).
+    if (root.object.get("error")) |err_val| {
+        if (err_val == .string) {
+            // Store in a thread-local so the resolver can retrieve it.
+            setLastRegistryError(err_val.string);
+        }
+        return error.RegistryError;
+    }
 
     const name_val = root.object.get("name") orelse return error.MissingName;
     if (name_val != .string) return error.MissingName;

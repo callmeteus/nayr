@@ -144,7 +144,15 @@ fn fetchWorker(shared: *const SharedFetchState, parent_alloc: std.mem.Allocator)
         defer allocator.free(tmp_path);
 
         client.downloadTarball(pkg.tarball_url, tmp_path, pkg.integrity) catch |err| {
-            shared.writer.emit(.{ .warning = @errorName(err) });
+            const detail: []const u8 = if (err == error.IntegrityMismatch)
+                "tarball checksum does not match lockfile — run nayr install again to re-fetch"
+            else
+                @errorName(err);
+            const wmsg = std.fmt.allocPrint(allocator,
+                "failed to download {s}@{s}: {s}",
+                .{ pkg.name, pkg.version, detail },
+            ) catch null;
+            if (wmsg) |m| { defer allocator.free(m); shared.writer.emit(.{ .warning = m }); }
             _ = shared.done_count.fetchAdd(1, .release);
             continue;
         };
@@ -155,7 +163,11 @@ fn fetchWorker(shared: *const SharedFetchState, parent_alloc: std.mem.Allocator)
             defer std.fs.deleteFileAbsolute(tmp_path) catch {};
             if (f.readToEndAlloc(allocator, 64 * 1024 * 1024)) |data| {
                 shared.cache.store(pkg.registry, pkg.name, pkg.version, data) catch |err| {
-                    shared.writer.emit(.{ .warning = @errorName(err) });
+                    const wmsg = std.fmt.allocPrint(allocator,
+                        "failed to cache {s}@{s}: {s}",
+                        .{ pkg.name, pkg.version, @errorName(err) },
+                    ) catch null;
+                    if (wmsg) |m| { defer allocator.free(m); shared.writer.emit(.{ .warning = m }); }
                 };
             } else |_| {}
         } else |_| {}

@@ -150,6 +150,11 @@ pub fn createWriter(allocator: std.mem.Allocator, format: Format, verbose: bool)
         .tui => {
             const impl = try allocator.create(TuiWriter);
             impl.* = TuiWriter.init(allocator, verbose);
+            impl.spinner_thread = std.Thread.spawn(
+                .{},
+                TuiWriter.spinnerThreadFn,
+                .{impl},
+            ) catch null;
             return Writer{
                 .ptr = impl,
                 .vtable = &TuiWriter.vtable,
@@ -214,6 +219,20 @@ const TuiWriter = struct {
     phase_done: u32 = 0,
     /// Total items in the current phase.
     phase_total: u32 = 0,
+    /// Stored label/colour/suffix for spinner-only redraws from background thread.
+    cur_label: [16]u8 = [_]u8{0} ** 16,
+    cur_label_len: u8 = 0,
+    cur_colour: [16]u8 = [_]u8{0} ** 16,
+    cur_colour_len: u8 = 0,
+    cur_suffix: [128]u8 = [_]u8{0} ** 128,
+    cur_suffix_len: u8 = 0,
+    /// Protects all terminal writes; held by both the main thread and the
+    /// background spinner thread.
+    mutex: std.Thread.Mutex = .{},
+    /// Signals the spinner thread to stop.
+    spinner_stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// Background thread that animates the spinner at ~12 fps.
+    spinner_thread: ?std.Thread = null,
 
     const vtable = Writer.VTable{
         .emit = emit,
@@ -228,6 +247,31 @@ const TuiWriter = struct {
             .stdout = std.io.getStdOut(),
             .colour = !hasNoColor(),
         };
+    }
+
+    /// Background thread entry point.  Advances the spinner every ~80 ms
+    /// regardless of whether a progress event arrives from the main thread.
+    fn spinnerThreadFn(self: *TuiWriter) void {
+        while (!self.spinner_stop.load(.acquire)) {
+            std.time.sleep(80 * std.time.ns_per_ms);
+            self.mutex.lock();
+            self.redrawSpinnerOnly();
+            self.mutex.unlock();
+        }
+    }
+
+    /// Redraws the progress area advancing only the spinner frame.
+    /// Must be called with `mutex` held.
+    fn redrawSpinnerOnly(self: *TuiWriter) void {
+        if (self.current_phase == 0 or self.progress_lines == 0) return;
+        self.drawProgress(
+            self.current_phase,
+            self.cur_label[0..self.cur_label_len],
+            self.cur_colour[0..self.cur_colour_len],
+            self.phase_done,
+            self.phase_total,
+            self.cur_suffix[0..self.cur_suffix_len],
+        );
     }
 
     /// Clears the progress area and moves the cursor to a clean line so that
@@ -278,6 +322,25 @@ const TuiWriter = struct {
         self.current_phase = phase;
         self.phase_done = done;
         self.phase_total = total;
+        // Keep a copy so the background spinner thread can redraw without
+        // needing the original (stack-allocated) strings.
+        // Guard against aliasing: when called from redrawSpinnerOnly the
+        // source slices point into these same fields — skip the copy then.
+        const ll = @min(label.len, self.cur_label.len);
+        if (@intFromPtr(label.ptr) != @intFromPtr(&self.cur_label[0])) {
+            @memcpy(self.cur_label[0..ll], label[0..ll]);
+            self.cur_label_len = @intCast(ll);
+        }
+        const cl = @min(colour_code.len, self.cur_colour.len);
+        if (@intFromPtr(colour_code.ptr) != @intFromPtr(&self.cur_colour[0])) {
+            @memcpy(self.cur_colour[0..cl], colour_code[0..cl]);
+            self.cur_colour_len = @intCast(cl);
+        }
+        const sl = @min(suffix.len, self.cur_suffix.len);
+        if (@intFromPtr(suffix.ptr) != @intFromPtr(&self.cur_suffix[0])) {
+            @memcpy(self.cur_suffix[0..sl], suffix[0..sl]);
+            self.cur_suffix_len = @intCast(sl);
+        }
 
         const w = self.stdout.writer();
 
@@ -328,6 +391,8 @@ const TuiWriter = struct {
 
     fn emit(ptr: *anyopaque, event: Event) void {
         const self: *TuiWriter = @ptrCast(@alignCast(ptr));
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const w = self.stdout.writer();
         switch (event) {
             .resolve_progress => |p| {
@@ -444,13 +509,21 @@ const TuiWriter = struct {
 
     fn flush(ptr: *anyopaque) void {
         const self: *TuiWriter = @ptrCast(@alignCast(ptr));
+        self.mutex.lock();
         self.clearProgress();
         self.stdout.sync() catch {};
+        self.mutex.unlock();
     }
 
     fn deinitFn(ptr: *anyopaque) void {
         const self: *TuiWriter = @ptrCast(@alignCast(ptr));
+        // Signal and join the spinner thread first so it can no longer touch
+        // the terminal after we start tearing down.
+        self.spinner_stop.store(true, .release);
+        if (self.spinner_thread) |t| t.join();
+        self.mutex.lock();
         self.clearProgress();
+        self.mutex.unlock();
         self.allocator.destroy(self);
     }
 };

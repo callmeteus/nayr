@@ -40,7 +40,19 @@ pub fn main() !void {
             error.NetworkError =>
                 "Network request failed. Check your internet connection and registry URL.\n       (hint: run with --verbose for more details)",
             error.HttpError =>
-                "Registry returned an HTTP error - see the warning above for the URL and status.\n       Common causes: wrong registry, missing auth token, or package does not exist.",
+                "Registry returned an HTTP error. Common causes: wrong registry URL, missing auth token, or package does not exist.",
+            error.RegistryError =>
+                "Registry returned an error response - see the message above for details.",
+            error.MissingName, error.InvalidMetadata =>
+                "Registry returned an unexpected or malformed response for a package.\n       The package may not exist, the registry URL may be wrong, or auth may be required.",
+            error.NoMatchingVersion =>
+                "No version of a required package satisfies the requested range - see the warning above.",
+            error.GitHostNotAllowed =>
+                "A git dependency was blocked by the allowed-git-hosts policy in your .nayrrc.",
+            error.RegistryNotAllowed =>
+                "A package registry was blocked by the allowed-registries policy in your .nayrrc.",
+            error.PackageTooNew =>
+                "A package version was blocked by the minimum-package-age policy in your .nayrrc.",
             error.OutOfMemory =>
                 "Out of memory.",
             error.AccessDenied =>

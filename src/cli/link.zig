@@ -17,6 +17,7 @@ const fs_util = @import("../util/fs.zig");
 const json_util = @import("../util/json.zig");
 const output = @import("../util/output.zig");
 const config_types = @import("../config/types.zig");
+const ws_discovery = @import("../workspace/discovery.zig");
 const Config = config_types.Config;
 
 // ============================================================================
@@ -246,11 +247,29 @@ fn registerCurrentPackage(
         return;
     };
     defer manifest.deinit(allocator);
-    const name = manifest.name orelse {
-        writer.emit(.{ .err = "package.json has no name field" });
-        return;
-    };
-    try registerNamedPackage(allocator, name, cwd, links_dir, writer);
+
+    // Register the root package (if it has a name).
+    if (manifest.name) |name| {
+        try registerNamedPackage(allocator, name, cwd, links_dir, writer);
+    }
+
+    // Also register every workspace package so that consumers in any other
+    // repo automatically pick up all packages in this monorepo with a single
+    // `nayr link` at the root.
+    const workspaces = ws_discovery.discover(allocator, cwd) catch &.{};
+    defer {
+        for (workspaces) |*ws| {
+            var m = ws.manifest;
+            m.deinit(allocator);
+            allocator.free(ws.path);
+            allocator.free(ws.rel_path);
+        }
+        allocator.free(workspaces);
+    }
+    for (workspaces) |ws| {
+        const ws_name = ws.manifest.name orelse continue;
+        try registerNamedPackage(allocator, ws_name, ws.path, links_dir, writer);
+    }
 }
 
 fn registerNamedPackage(

@@ -424,7 +424,7 @@ pub fn resolve(
                         .{ effective_range, req.name },
                     );
                     defer allocator.free(msg);
-                    std.io.getStdErr().writer().print("  error  {s}\n", .{msg}) catch {};
+                    writer.emit(.{ .err = msg });
                     return error.GitHostNotAllowed;
                 }
 
@@ -473,7 +473,7 @@ pub fn resolve(
                         .{ registry_url, req.name },
                     );
                     defer allocator.free(msg);
-                    std.io.getStdErr().writer().print("  error  {s}\n", .{msg}) catch {};
+                    writer.emit(.{ .err = msg });
                     return error.RegistryNotAllowed;
                 }
             }
@@ -519,10 +519,26 @@ pub fn resolve(
             for (batch_results, chunk) |*result, pf| {
                 if (result.err) |err| {
                     if (pf.optional) continue;
-                    std.io.getStdErr().writer().print(
-                        "  warn  failed to resolve package: {s}\n",
-                        .{pf.name},
-                    ) catch {};
+                    // If the registry returned a named error (e.g. "no such
+                    // package available"), surface it alongside the error code.
+                    const reg_msg = registry_client.takeLastRegistryError();
+                    if (reg_msg.len > 0) {
+                        const msg = std.fmt.allocPrint(
+                            allocator,
+                            "failed to fetch metadata for {s}: {s} ({s})",
+                            .{ pf.name, reg_msg, @errorName(err) },
+                        ) catch pf.name;
+                        defer if (msg.ptr != pf.name.ptr) allocator.free(msg);
+                        writer.emit(.{ .err = msg });
+                    } else {
+                        const msg = std.fmt.allocPrint(
+                            allocator,
+                            "failed to fetch metadata for {s}: {s}",
+                            .{ pf.name, @errorName(err) },
+                        ) catch pf.name;
+                        defer if (msg.ptr != pf.name.ptr) allocator.free(msg);
+                        writer.emit(.{ .err = msg });
+                    }
                     return err;
                 }
 
@@ -579,17 +595,23 @@ pub fn resolve(
                         var all_it = meta.versions.keyIterator();
                         while (all_it.next()) |k| try all_strs.append(k.*);
                         if (semver.maxSatisfying(allocator, all_strs.items, pf.eff_range, latest) != null) {
-                            std.io.getStdErr().writer().print(
-                                "  error  security: all versions of {s} satisfying \"{s}\" were published within the last {d}s\n",
+                            const msg = try std.fmt.allocPrint(
+                                allocator,
+                                "security: all versions of {s} satisfying \"{s}\" were published within the last {d}s",
                                 .{ pf.name, pf.eff_range, config.minimum_package_age_seconds },
-                            ) catch {};
+                            );
+                            defer allocator.free(msg);
+                            writer.emit(.{ .err = msg });
                             return error.PackageTooNew;
                         }
                     }
-                    std.io.getStdErr().writer().print(
-                        "  warn  no version of {s} satisfies range \"{s}\"\n",
+                    const warn_msg = try std.fmt.allocPrint(
+                        allocator,
+                        "no version of {s} satisfies range \"{s}\"",
                         .{ pf.name, pf.eff_range },
-                    ) catch {};
+                    );
+                    defer allocator.free(warn_msg);
+                    writer.emit(.{ .warning = warn_msg });
                     return error.NoMatchingVersion;
                 };
 

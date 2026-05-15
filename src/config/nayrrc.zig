@@ -309,7 +309,7 @@ fn applySecurityKey(
 ///   `"1d"`   → 86400
 ///   `"7d"`   → 604800
 ///   `"3600"` → 3600 (bare number treated as seconds)
-fn parseAgeString(s: []const u8) u64 {
+pub fn parseAgeString(s: []const u8) u64 {
     const t = std.mem.trim(u8, s, " \t");
     if (t.len == 0) return 0;
     if (t[t.len - 1] == 'h') {

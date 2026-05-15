@@ -67,7 +67,12 @@ pub fn link(
             fs_util.mkdirParents(allocator, dest) catch {};
             std.fs.deleteTreeAbsolute(dest) catch {};
             platform.symlinkOrJunction(ws_path, dest) catch |err| {
-                writer.emit(.{ .warning = @errorName(err) });
+                const wmsg = std.fmt.allocPrint(
+                    allocator,
+                    "could not symlink {s} → {s}: {s}",
+                    .{ hp.name, ws_path, @errorName(err) },
+                ) catch null;
+                if (wmsg) |m| { defer allocator.free(m); writer.emit(.{ .warning = m }); }
             };
             if (hp.pkg.is_linked) {
                 const msg = std.fmt.allocPrint(
@@ -100,7 +105,7 @@ pub fn link(
                 // The next `nayr install` will re-fetch the missing package.
                 const wmsg = std.fmt.allocPrint(
                     allocator,
-                    "warn: failed to copy {s}@{s} from cache: {s}",
+                    "cache miss for {s}@{s} ({s}) — will re-fetch on next install",
                     .{ hp.name, hp.version, @errorName(err) },
                 ) catch null;
                 if (wmsg) |m| {
