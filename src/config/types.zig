@@ -217,6 +217,23 @@ pub const Config = struct {
     // Lookups
     // -------------------------------------------------------------------------
 
+    /// Returns true when `pkg_name` is exempt from all supply-chain security
+    /// checks (minimum-package-age, allowed-registries, allowed-git-hosts).
+    ///
+    /// A package is exempt when its name matches any pattern in
+    /// `auto_link_patterns` — those are the developer's own workspace packages
+    /// (e.g. `@lemon/*`, `@luckymaker/*`) that are explicitly trusted.
+    ///
+    /// The root package of the current install is also always exempt; callers
+    /// are responsible for passing its name alongside dependency names when
+    /// relevant (the resolver already skips the root itself from the queue).
+    pub fn isExemptFromSecurity(self: *const Config, pkg_name: []const u8) bool {
+        for (self.auto_link_patterns) |pattern| {
+            if (globMatchSimple(pattern, pkg_name)) return true;
+        }
+        return false;
+    }
+
     /// Returns true when `registry_url` is permitted by the configured
     /// `allowed_registries` list.
     ///

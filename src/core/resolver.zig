@@ -210,6 +210,18 @@ pub fn resolve(
         range_to_key.deinit(allocator);
     }
 
+    // Collect names of all workspace packages (root + sub-workspaces).
+    // These are always exempt from security checks — they're the developer's
+    // own code, never downloaded from a registry or external git host.
+    var workspace_names = std.StringHashMapUnmanaged(void){};
+    defer workspace_names.deinit(allocator);
+    if (root_manifest.name) |n| {
+        try workspace_names.put(allocator, n, {});
+    }
+    for (workspaces) |*ws| {
+        if (ws.manifest.name) |n| try workspace_names.put(allocator, n, {});
+    }
+
     try enqueueDeps(allocator, &queue, &root_manifest, opts);
     for (workspaces) |*ws| {
         try enqueueDeps(allocator, &queue, &ws.manifest, opts);
@@ -400,7 +412,12 @@ pub fn resolve(
                 if (opts.frozen_lockfile) return error.FrozenLockfileChanged;
 
                 // Security: git host allow-list.
-                if (!config.isGitHostAllowed(effective_range)) {
+                // Skipped for the developer's own packages (auto_link_patterns
+                // or any workspace in this repo).
+                if (!config.isExemptFromSecurity(req.name) and
+                    !workspace_names.contains(req.name) and
+                    !config.isGitHostAllowed(effective_range))
+                {
                     const msg = try std.fmt.allocPrint(
                         allocator,
                         "security: git source not in allowed-git-hosts: {s} (required by {s})",
@@ -444,7 +461,9 @@ pub fn resolve(
             if (opts.frozen_lockfile) return error.FrozenLockfileChanged;
 
             // Security: registry allow-list.
-            {
+            // Skipped for the developer's own packages (auto_link_patterns
+            // or any workspace in this repo).
+            if (!config.isExemptFromSecurity(req.name) and !workspace_names.contains(req.name)) {
                 const registry_url = config.getRegistry(extractScope(req.name));
                 if (!config.isRegistryAllowed(registry_url)) {
                     if (req.optional) continue;
@@ -519,7 +538,12 @@ pub fn resolve(
 
                 // Security: minimum package age filter.
                 // Remove versions that were published too recently.
-                if (config.minimum_package_age_seconds > 0) {
+                // Skipped for own workspace packages (auto_link_patterns or
+                // any workspace package in this repo).
+                if (config.minimum_package_age_seconds > 0 and
+                    !config.isExemptFromSecurity(pf.name) and
+                    !workspace_names.contains(pf.name))
+                {
                     const now_secs = std.time.timestamp();
                     const min_age: i64 = @intCast(config.minimum_package_age_seconds);
                     const cutoff = now_secs - min_age;
