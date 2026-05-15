@@ -241,10 +241,11 @@ fn registerCurrentPackage(
 ) !void {
     const manifest_path = try std.fs.path.join(allocator, &.{ cwd, "package.json" });
     defer allocator.free(manifest_path);
-    const manifest = json_util.parseFile(allocator, manifest_path) catch {
+    var manifest = json_util.parseFile(allocator, manifest_path) catch {
         writer.emit(.{ .err = "no package.json in current directory" });
         return;
     };
+    defer manifest.deinit(allocator);
     const name = manifest.name orelse {
         writer.emit(.{ .err = "package.json has no name field" });
         return;
@@ -270,10 +271,15 @@ fn registerNamedPackage(
     const link_path = try std.fs.path.join(allocator, &.{ links_dir, name });
     defer allocator.free(link_path);
 
-    // If already pointing to this exact directory, skip silently.
+    // If already pointing to this exact directory, report and skip.
     if (platform.readSymlinkAbsolute(allocator, link_path)) |existing| {
         defer allocator.free(existing);
-        if (std.mem.eql(u8, existing, cwd)) return;
+        if (std.mem.eql(u8, existing, cwd)) {
+            const msg = try std.fmt.allocPrint(allocator, "already registered: {s} → {s}", .{ name, cwd });
+            defer allocator.free(msg);
+            writer.emit(.{ .info = msg });
+            return;
+        }
     } else |_| {}
 
     std.fs.deleteFileAbsolute(link_path) catch {};
