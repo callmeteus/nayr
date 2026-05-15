@@ -12,7 +12,7 @@ test "workspace resolution: satisfies range" {
 test "git dep detection" {
     // Mimic the resolver's isGitDep logic.
     const git_deps = &[_][]const u8{
-        "git+https://github.com/edjdigital/lemon-linting.git",
+        "git+https://github.com/even7hq/lemon-linting.git",
         "git://github.com/user/repo.git",
         "github:user/repo",
     };

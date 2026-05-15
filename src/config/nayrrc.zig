@@ -20,8 +20,8 @@
 //!
 //! [git]
 //! pin-hash = true
-//! no-pin-orgs = ["edjdigital"]
-//! no-pin-repos = ["edjdigital/lemon-linting"]
+//! no-pin-orgs = ["example"]
+//! no-pin-repos = ["example/package"]
 //!
 //! [security]
 //! # Minimum age (in seconds or human string) a package version must have
@@ -30,7 +30,7 @@
 //! # Registries allowed to serve packages (glob patterns, scheme optional).
 //! allowed-registries = ["registry.npmjs.org", "npm.arpa*"]
 //! # Git hosts / URL prefixes allowed as git dependencies.
-//! allowed-git-hosts = ["github.com/edjdigital/*", "github.com/callmeteus/*"]
+//! allowed-git-hosts = ["github.com/even7hq/*", "github.com/callmeteus/*"]
 //! ```
 
 const std = @import("std");

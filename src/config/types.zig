@@ -90,11 +90,11 @@ pub const Config = struct {
     git_pin_hash: bool = true,
 
     /// GitHub organisations whose git deps should NOT be pinned to a hash.
-    /// E.g. `["edjdigital"]` to always track HEAD for `edjdigital/*` repos.
+    /// E.g. `["example"]` to always track HEAD for `example/*` repos.
     git_no_pin_orgs: []const []const u8 = &.{},
 
     /// Specific repos (org/repo) whose git deps should NOT be pinned.
-    /// E.g. `["edjdigital/lemon-linting"]`.
+    /// E.g. `["example/package"]`.
     git_no_pin_repos: []const []const u8 = &.{},
 
     /// Private registry configurations from `.nayrrc [registry.*]` sections.
@@ -128,7 +128,7 @@ pub const Config = struct {
     /// the scheme-stripped git URL, e.g.:
     ///
     ///   `"github.com"`                – any repo on GitHub
-    ///   `"github.com/edjdigital/*"`   – only repos in one org
+    ///   `"github.com/even7hq/*"`   – only repos in one org
     ///   `"gitlab.com"`                – any repo on GitLab
     ///
     /// `null` (the default) means ALL git sources are permitted.
@@ -255,8 +255,8 @@ pub const Config = struct {
     /// `allowed_git_hosts` list.
     ///
     /// The URL is matched after stripping any `git+` prefix and its URL scheme,
-    /// leaving e.g. `github.com/edjdigital/repo.git`, so patterns like
-    /// `"github.com/edjdigital/*"` work naturally.
+    /// leaving e.g. `github.com/even7hq/repo.git`, so patterns like
+    /// `"github.com/even7hq/*"` work naturally.
     ///
     /// Returns true unconditionally when `allowed_git_hosts` is null.
     pub fn isGitHostAllowed(self: *const Config, git_url: []const u8) bool {
@@ -316,8 +316,8 @@ pub const Config = struct {
     /// pinned in the lockfile.
     ///
     /// ## Parameters
-    /// - `org`: GitHub organisation name (e.g. `"edjdigital"`).
-    /// - `repo`: Repository name (e.g. `"lemon-linting"`).
+    /// - `org`: GitHub organisation name (e.g. `"example"`).
+    /// - `repo`: Repository name (e.g. `"package"`).
     ///
     /// ## Returns
     /// `true` = pin the hash; `false` = always re-resolve to HEAD.
