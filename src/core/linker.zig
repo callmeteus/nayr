@@ -297,74 +297,113 @@ fn installGitPackage(
     name: []const u8,
     writer: output.Writer,
 ) !void {
-    // Strip the `git+` scheme prefix that npm uses but git CLI does not accept.
-    const url = if (std.mem.startsWith(u8, raw_url, "git+")) raw_url[4..] else raw_url;
+    const resolver = @import("../core/resolver.zig");
+    const parts = resolver.parseGitDepUrl(raw_url);
 
-    // Skip cloning when the package directory already has a .git folder.
-    // This avoids slow re-clones on every non-force install.
-    const git_marker = try std.fs.path.join(allocator, &.{ dest, ".git" });
-    defer allocator.free(git_marker);
-    const already_cloned = blk: {
+    // When no subdir is involved the clone lands directly in `dest` and we
+    // detect re-use via `.git/`.  With a subdir we clone to a temp path and
+    // copy only the subdirectory, so we use `dest/package.json` as the marker.
+    const already_installed = if (parts.subdir == null) blk: {
+        const git_marker = try std.fs.path.join(allocator, &.{ dest, ".git" });
+        defer allocator.free(git_marker);
         std.fs.accessAbsolute(git_marker, .{}) catch break :blk false;
         break :blk true;
+    } else blk: {
+        const pkg_marker = try std.fs.path.join(allocator, &.{ dest, "package.json" });
+        defer allocator.free(pkg_marker);
+        std.fs.accessAbsolute(pkg_marker, .{}) catch break :blk false;
+        break :blk true;
     };
-    if (already_cloned) return;
+    if (already_installed) return;
+
+    // Decide the clone target:
+    //   no subdir → clone directly into dest
+    //   subdir    → clone into a temp dir, then copy the subdir into dest
+    const clone_dest = if (parts.subdir != null) blk: {
+        // Use a unique temp path derived from dest to avoid conflicts between
+        // concurrent installs of different packages.
+        break :blk try std.fmt.allocPrint(allocator, "/tmp/nayr-git-{x}", .{
+            std.hash.Wyhash.hash(0, dest),
+        });
+    } else dest;
+    defer if (parts.subdir != null) allocator.free(clone_dest);
 
     // Remove any partial previous clone before starting fresh.
-    std.fs.deleteTreeAbsolute(dest) catch {};
-    fs_util.mkdirParents(allocator, dest) catch {};
+    std.fs.deleteTreeAbsolute(clone_dest) catch {};
+    fs_util.mkdirParents(allocator, clone_dest) catch {};
 
-    const msg = try std.fmt.allocPrint(allocator, "cloning git dep: {s}", .{name});
+    const msg = if (parts.branch) |b|
+        try std.fmt.allocPrint(allocator, "cloning git dep: {s}  ({s})", .{ name, b })
+    else
+        try std.fmt.allocPrint(allocator, "cloning git dep: {s}", .{name});
     defer allocator.free(msg);
     writer.emit(.{ .info = msg });
 
-    var child = std.process.Child.init(
-        &[_][]const u8{ "git", "clone", "--depth", "1", "--quiet", url, dest },
-        allocator,
-    );
+    // Build the git clone command.
+    var argv = std.ArrayList([]const u8).init(allocator);
+    defer argv.deinit();
+    try argv.appendSlice(&.{ "git", "clone", "--depth", "1", "--quiet" });
+    if (parts.branch) |b| try argv.appendSlice(&.{ "--branch", b });
+    try argv.appendSlice(&.{ parts.clean_url, clone_dest });
+
+    var child = std.process.Child.init(argv.items, allocator);
     child.stdin_behavior = .Ignore;
     child.stdout_behavior = .Ignore;
     child.stderr_behavior = .Pipe;
 
     child.spawn() catch |err| {
-        const wmsg = try std.fmt.allocPrint(
-            allocator,
-            "git clone failed for {s}: {s}",
-            .{ name, @errorName(err) },
-        );
+        std.fs.deleteTreeAbsolute(clone_dest) catch {};
+        const wmsg = try std.fmt.allocPrint(allocator, "git clone failed for {s}: {s}", .{ name, @errorName(err) });
         defer allocator.free(wmsg);
         writer.emit(.{ .warning = wmsg });
         return;
     };
 
-    // Capture stderr in case git prints an error message.
     const stderr_output = child.stderr.?.reader().readAllAlloc(allocator, 8 * 1024) catch "";
     defer if (stderr_output.len > 0) allocator.free(stderr_output);
 
-    const result = child.wait() catch return;
+    const result = child.wait() catch {
+        std.fs.deleteTreeAbsolute(clone_dest) catch {};
+        return;
+    };
     const exit_code: u8 = switch (result) {
         .Exited => |c| c,
         else => 1,
     };
 
     if (exit_code != 0) {
-        // Remove any partial directory that git may have created before failing.
-        // Without this cleanup the directory shows up as an empty entry in
-        // node_modules and confuses subsequent integrity checks and installs.
-        std.fs.deleteTreeAbsolute(dest) catch {};
-
+        std.fs.deleteTreeAbsolute(clone_dest) catch {};
         const wmsg = try std.fmt.allocPrint(
             allocator,
             "git clone exited {d} for {s}{s}{s}",
-            .{
-                exit_code,
-                name,
-                if (stderr_output.len > 0) ": " else "",
-                std.mem.trimRight(u8, stderr_output, "\n"),
-            },
+            .{ exit_code, name, if (stderr_output.len > 0) ": " else "", std.mem.trimRight(u8, stderr_output, "\n") },
         );
         defer allocator.free(wmsg);
         writer.emit(.{ .warning = wmsg });
+        return;
+    }
+
+    // If a subdirectory was requested, copy it to dest and remove the full clone.
+    if (parts.subdir) |subdir| {
+        defer std.fs.deleteTreeAbsolute(clone_dest) catch {};
+
+        const subdir_path = try std.fs.path.join(allocator, &.{ clone_dest, subdir });
+        defer allocator.free(subdir_path);
+
+        // Verify the subdir exists before trying to copy it.
+        std.fs.accessAbsolute(subdir_path, .{}) catch {
+            const wmsg = try std.fmt.allocPrint(
+                allocator,
+                "git dep {s}: subdirectory '{s}' not found in repo",
+                .{ name, subdir },
+            );
+            defer allocator.free(wmsg);
+            writer.emit(.{ .warning = wmsg });
+            return;
+        };
+
+        std.fs.deleteTreeAbsolute(dest) catch {};
+        try copyPackageDir(allocator, subdir_path, dest);
     }
 }
 

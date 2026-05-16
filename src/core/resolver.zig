@@ -855,14 +855,20 @@ fn resolvedFromLockEntry(
     entry: *const lockfile_types.LockfileEntry,
     config: *const Config,
 ) !ResolvedPackage {
+    // A lockfile entry is a git dep when its resolved URL starts with a known
+    // git scheme (the same check used during fresh resolution).
+    const git = isGitDep(entry.resolved) or isGitDep(entry.version);
     return ResolvedPackage{
         .name = try allocator.dupe(u8, name),
         .version = try allocator.dupe(u8, entry.version),
-        .tarball_url = try allocator.dupe(u8, entry.resolved),
+        // For git deps the resolved field holds the original git URL (with any
+        // branch/subdir fragment).  Fall back to the version string so that
+        // packages written by older nayr versions (resolved="") still work.
+        .tarball_url = try allocator.dupe(u8, if (git and entry.resolved.len == 0) entry.version else entry.resolved),
         .integrity = try allocator.dupe(u8, entry.integrity),
         .registry = try allocator.dupe(u8, config.getRegistry(extractScope(name))),
         .is_workspace = false,
-        .is_git = false,
+        .is_git = git,
         .dependencies = try copyStringMap(allocator, &entry.dependencies),
         .optional_dependencies = try copyStringMap(allocator, &entry.optional_dependencies),
     };
@@ -904,26 +910,34 @@ fn resolveGitDep(
     url: []const u8,
     config: *const Config,
 ) !ResolvedPackage {
-    // Extract org and repo from the URL.
+    const parts = parseGitDepUrl(url);
+
     const org_repo = extractGitOrgRepo(url);
     const should_pin = config.shouldPinGitHash(org_repo[0], org_repo[1]);
 
-    // Run `git ls-remote <url> HEAD` to get the current commit hash.
+    // Optionally pin the commit hash with `git ls-remote`.
     var head_hash: []const u8 = "";
     if (should_pin) {
         head_hash = resolveGitHash(allocator, url) catch "";
     }
     defer if (head_hash.len > 0) allocator.free(head_hash);
 
-    // The "version" for a git dep is the commit hash (when pinned) or "HEAD".
+    // Version stored in the lockfile:
+    //   pinned  → "<clean_url>#<commit_hash>"   (branch/subdir preserved in tarball_url)
+    //   unpinned → the original URL as-is (re-resolved on next install)
+    //
+    // We deliberately keep the commit hash in a separate segment so that the
+    // lockfile key stays unambiguous even when the URL contains a #fragment.
     const version = if (head_hash.len > 0)
-        try std.fmt.allocPrint(allocator, "git+{s}#{s}", .{ url, head_hash })
+        try std.fmt.allocPrint(allocator, "{s}#{s}", .{ parts.clean_url, head_hash })
     else
         try allocator.dupe(u8, url);
 
     return ResolvedPackage{
         .name = try allocator.dupe(u8, name),
         .version = version,
+        // tarball_url carries the full original URL (including branch/subdir
+        // fragment) so the linker can parse it with parseGitDepUrl.
         .tarball_url = try allocator.dupe(u8, url),
         .integrity = "",
         .registry = "",
@@ -934,13 +948,65 @@ fn resolveGitDep(
     };
 }
 
-/// Runs `git ls-remote <url> HEAD` and returns the commit hash.
+/// Parsed components of a git dependency URL.
+///
+/// Supported format:  `git+<scheme>://<host>/<path>[#<branch>[:<subdir>]]`
+///
+/// Examples:
+///   git+https://github.com/org/repo               → branch=null, subdir=null
+///   git+https://github.com/org/repo#main          → branch="main", subdir=null
+///   git+https://github.com/org/repo#main:pkg/core → branch="main", subdir="pkg/core"
+///   git+https://github.com/org/repo#:pkg/core     → branch=null,   subdir="pkg/core"
+pub const GitDepParts = struct {
+    /// Clone URL (no `git+` prefix, no `#fragment`).
+    clean_url: []const u8,
+    /// Branch / tag / ref to checkout. Null means use the remote default (HEAD).
+    branch: ?[]const u8,
+    /// Subdirectory within the repo to use as the package root. Null = root.
+    subdir: ?[]const u8,
+};
+
+/// Parses a git dependency URL into its component parts.
+/// All returned slices are sub-slices of `url` (no allocation).
+pub fn parseGitDepUrl(url: []const u8) GitDepParts {
+    const no_prefix = if (std.mem.startsWith(u8, url, "git+")) url[4..] else url;
+
+    const hash_pos = std.mem.indexOfScalar(u8, no_prefix, '#') orelse {
+        return .{ .clean_url = no_prefix, .branch = null, .subdir = null };
+    };
+
+    const clean_url = no_prefix[0..hash_pos];
+    const fragment = no_prefix[hash_pos + 1 ..];
+
+    if (std.mem.indexOfScalar(u8, fragment, ':')) |cp| {
+        const branch_part = fragment[0..cp];
+        const path_part = fragment[cp + 1 ..];
+        return .{
+            .clean_url = clean_url,
+            .branch = if (branch_part.len > 0) branch_part else null,
+            .subdir = if (path_part.len > 0) path_part else null,
+        };
+    }
+
+    return .{
+        .clean_url = clean_url,
+        .branch = if (fragment.len > 0) fragment else null,
+        .subdir = null,
+    };
+}
+
+/// Runs `git ls-remote` and returns the commit hash for the given ref.
+/// When `branch` is null, queries `HEAD`; otherwise `refs/heads/<branch>`.
 fn resolveGitHash(allocator: std.mem.Allocator, url: []const u8) ![]const u8 {
-    // Strip `git+` prefix if present.
-    const clean_url = if (std.mem.startsWith(u8, url, "git+")) url[4..] else url;
+    const parts = parseGitDepUrl(url);
+
+    const ref: []const u8 = if (parts.branch) |b| blk: {
+        break :blk try std.fmt.allocPrint(allocator, "refs/heads/{s}", .{b});
+    } else "HEAD";
+    defer if (parts.branch != null) allocator.free(ref);
 
     var child = std.process.Child.init(
-        &[_][]const u8{ "git", "ls-remote", clean_url, "HEAD" },
+        &[_][]const u8{ "git", "ls-remote", parts.clean_url, ref },
         allocator,
     );
     child.stdout_behavior = .Pipe;
@@ -948,16 +1014,12 @@ fn resolveGitHash(allocator: std.mem.Allocator, url: []const u8) ![]const u8 {
     try child.spawn();
 
     const stdout = try child.stdout.?.reader().readAllAlloc(allocator, 256);
+    defer allocator.free(stdout);
     _ = try child.wait();
 
-    // Output format: "<hash>\tHEAD\n"
-    const tab = std.mem.indexOfScalar(u8, stdout, '\t') orelse {
-        allocator.free(stdout);
-        return error.GitHashNotFound;
-    };
-    const hash = try allocator.dupe(u8, stdout[0..tab]);
-    allocator.free(stdout);
-    return hash;
+    // Output format: "<hash>\t<ref>\n"
+    const tab = std.mem.indexOfScalar(u8, stdout, '\t') orelse return error.GitHashNotFound;
+    return try allocator.dupe(u8, stdout[0..tab]);
 }
 
 /// Extracts (org, repo) from a GitHub URL.
