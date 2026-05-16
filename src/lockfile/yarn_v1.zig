@@ -196,7 +196,10 @@ const Parser = struct {
 
         while (!self.atEnd() and self.src[self.pos] != ':' and self.src[self.pos] != '\n') {
             self.skipInlineWhitespace();
-            const raw = self.readQuotedOrBare();
+            // Use readPatternToken (stops at `,` and `:` for bare tokens) so that
+            // unquoted patterns like `react-is@^18.2.0` are not stored with a
+            // trailing comma or colon, which would break lockfile key lookups.
+            const raw = self.readPatternToken();
             if (raw.len == 0) break;
             // Remove surrounding quotes if present.
             const pat = if (raw.len >= 2 and raw[0] == '"')
@@ -250,7 +253,19 @@ const Parser = struct {
     }
 
     /// Reads a value: either a double-quoted string or a bare token up to EOL.
+    ///
+    /// In the pattern header, bare tokens like `react-is@^18.2.0,` should stop
+    /// at `,` and `:` so that trailing punctuation is not included in the pattern.
+    /// Set `stop_at_punctuation` to true when reading pattern header tokens.
     fn readQuotedOrBare(self: *Parser) []const u8 {
+        return self.readQuotedOrBareInner(false);
+    }
+
+    fn readPatternToken(self: *Parser) []const u8 {
+        return self.readQuotedOrBareInner(true);
+    }
+
+    fn readQuotedOrBareInner(self: *Parser, stop_at_punctuation: bool) []const u8 {
         if (self.pos < self.src.len and self.src[self.pos] == '"') {
             // Quoted string: read until closing `"`, return contents without quotes.
             self.pos += 1; // skip opening "
@@ -263,10 +278,14 @@ const Parser = struct {
             return result;
         }
         // Bare token: read until whitespace or end-of-line.
+        // When reading pattern headers, also stop at `,` and `:` so that
+        // punctuation is not included in the pattern string (e.g. "react-is@^18.2.0,"
+        // would otherwise be stored with the trailing comma, breaking lockfile lookups).
         const start = self.pos;
         while (self.pos < self.src.len) {
             const c = self.src[self.pos];
             if (c == ' ' or c == '\t' or c == '\n' or c == '\r') break;
+            if (stop_at_punctuation and (c == ',' or c == ':')) break;
             self.pos += 1;
         }
         return self.src[start..self.pos];

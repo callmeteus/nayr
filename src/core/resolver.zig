@@ -478,10 +478,13 @@ pub fn resolve(
                 }
             }
 
+            const npm_alias = parseNpmAlias(effective_range);
             try pending_batch.append(.{
                 .name = req.name,
                 .eff_range = effective_range,
                 .optional = req.optional,
+                .real_name = if (npm_alias) |a| try allocator.dupe(u8, a.real_name) else null,
+                .real_range = if (npm_alias) |a| try allocator.dupe(u8, a.real_range) else null,
             });
         }
 
@@ -507,22 +510,29 @@ pub fn resolve(
             const batch_items = try allocator.alloc(registry_client.BatchItem, chunk.len);
             defer allocator.free(batch_items);
             for (chunk, batch_items) |pf, *bi| {
-                bi.* = .{ .name = pf.name, .optional = pf.optional };
+                // For npm aliases (e.g. "react-is-18": "npm:react-is@^18.3.1"), the
+                // registry request must use the real package name ("react-is"), not the
+                // alias ("react-is-18") which does not exist on the registry.
+                bi.* = .{ .name = pf.real_name orelse pf.name, .optional = pf.optional };
             }
 
             const batch_results = try registry_client.fetchMetadataBatch(allocator, batch_items, config);
             defer {
-                for (batch_results) |*r| if (r.meta) |*m| m.deinit(allocator);
+                for (batch_results) |*r| {
+                    if (r.meta) |*m| m.deinit(allocator);
+                    if (r.err_msg) |m| allocator.free(m);
+                }
                 allocator.free(batch_results);
             }
 
             for (batch_results, chunk) |*result, pf| {
                 if (result.err) |err| {
                     if (pf.optional) continue;
-                    // If the registry returned a named error (e.g. "no such
-                    // package available"), surface it alongside the error code.
-                    const reg_msg = registry_client.takeLastRegistryError();
-                    if (reg_msg.len > 0) {
+                    // Use the per-result error message (set during batch processing).
+                    // This avoids cross-contamination: before this fix, a shared global
+                    // buffer was overwritten by each failing item, causing item[0] to
+                    // display item[N-1]'s URL in its error message.
+                    if (result.err_msg) |reg_msg| {
                         const msg = std.fmt.allocPrint(
                             allocator,
                             "failed to fetch metadata for {s}: {s} ({s})",
@@ -581,10 +591,13 @@ pub fn resolve(
                 }
 
                 const latest = meta.dist_tags.get("latest");
+                // For npm aliases (e.g. "react-is-18": "npm:react-is@^18.3.1"), use the
+                // real semver range extracted from the npm: prefix, not the full alias range.
+                const semver_range = pf.real_range orelse pf.eff_range;
                 const best_ver = semver.maxSatisfying(
                     allocator,
                     version_strs.items,
-                    pf.eff_range,
+                    semver_range,
                     latest,
                 ) orelse {
                     if (pf.optional) continue;
@@ -594,11 +607,11 @@ pub fn resolve(
                         defer all_strs.deinit();
                         var all_it = meta.versions.keyIterator();
                         while (all_it.next()) |k| try all_strs.append(k.*);
-                        if (semver.maxSatisfying(allocator, all_strs.items, pf.eff_range, latest) != null) {
+                        if (semver.maxSatisfying(allocator, all_strs.items, semver_range, latest) != null) {
                             const msg = try std.fmt.allocPrint(
                                 allocator,
                                 "security: all versions of {s} satisfying \"{s}\" were published within the last {d}s",
-                                .{ pf.name, pf.eff_range, config.minimum_package_age_seconds },
+                                .{ pf.name, semver_range, config.minimum_package_age_seconds },
                             );
                             defer allocator.free(msg);
                             writer.emit(.{ .err = msg });
@@ -608,7 +621,7 @@ pub fn resolve(
                     const warn_msg = try std.fmt.allocPrint(
                         allocator,
                         "no version of {s} satisfies range \"{s}\"",
-                        .{ pf.name, pf.eff_range },
+                        .{ pf.name, semver_range },
                     );
                     defer allocator.free(warn_msg);
                     writer.emit(.{ .warning = warn_msg });
@@ -647,7 +660,9 @@ pub fn resolve(
                     .version = try allocator.dupe(u8, ver_info.version),
                     .tarball_url = try allocator.dupe(u8, ver_info.tarball),
                     .integrity = try allocator.dupe(u8, ver_info.integrity),
-                    .registry = try allocator.dupe(u8, config.getRegistry(extractScope(pf.name))),
+                    // For npm aliases, the registry scope comes from the real package
+                    // name, not the alias (e.g. "@myorg/util" in "npm:@myorg/util@^1").
+                    .registry = try allocator.dupe(u8, config.getRegistry(extractScope(pf.real_name orelse pf.name))),
                     .is_workspace = false,
                     .is_git = false,
                     .dependencies = try copyStringMap(allocator, &ver_info.dependencies),
@@ -666,6 +681,11 @@ pub fn resolve(
             }
         }
 
+        // Free npm alias strings duped during enqueueing before reusing the list.
+        for (pending_batch.items) |pf| {
+            if (pf.real_name) |rn| allocator.free(rn);
+            if (pf.real_range) |rr| allocator.free(rr);
+        }
         pending_batch.clearRetainingCapacity();
     }
 
@@ -705,9 +725,17 @@ const DepRequest = struct {
 
 /// A registry package queued for batch fetching in the current BFS wave.
 const PendingFetch = struct {
+    /// Package name as declared by the depending package (alias or real name).
+    /// Used as the node_modules directory name and in user-facing error messages.
     name: []const u8,
     eff_range: []const u8,
     optional: bool,
+    /// For npm aliases (range starts with "npm:"): the real registry package name.
+    /// e.g. for `"react-is-18": "npm:react-is@^18.3.1"`, this is "react-is".
+    real_name: ?[]const u8 = null,
+    /// For npm aliases: the real semver range extracted from the npm: prefix.
+    /// e.g. for "npm:react-is@^18.3.1", this is "^18.3.1".
+    real_range: ?[]const u8 = null,
 };
 
 fn enqueueDeps(
@@ -1041,6 +1069,36 @@ fn extractScope(name: []const u8) ?[]const u8 {
     if (name.len == 0 or name[0] != '@') return null;
     const slash = std.mem.indexOfScalar(u8, name, '/') orelse return null;
     return name[0..slash];
+}
+
+/// Parsed result of an npm alias range like `npm:react-is@^18.3.1`.
+const NpmAlias = struct {
+    /// The real package name to fetch from the registry (e.g. "react-is").
+    real_name: []const u8,
+    /// The actual semver range (e.g. "^18.3.1").
+    real_range: []const u8,
+};
+
+/// Parses an npm alias range of the form `npm:<package>@<range>`.
+///
+/// Returns null for ranges that do not start with `npm:`.
+/// Handles scoped packages (e.g. `npm:@babel/core@^7.0.0`).
+///
+/// @param range - The raw version range string from a dependency map.
+/// @returns Parsed alias with real_name and real_range, or null if not an alias.
+fn parseNpmAlias(range: []const u8) ?NpmAlias {
+    const prefix = "npm:";
+    if (!std.mem.startsWith(u8, range, prefix)) return null;
+    const rest = range[prefix.len..]; // e.g. "react-is@^18.3.1" or "@babel/core@^7.0.0"
+
+    // Find the last `@` to split name from version range.
+    // For scoped packages like `@babel/core@^7`, the first `@` is part of the name.
+    const at = std.mem.lastIndexOfScalar(u8, rest, '@') orelse return null;
+    if (at == 0) return null; // bare "@" with no name
+    return NpmAlias{
+        .real_name = rest[0..at],
+        .real_range = rest[at + 1 ..],
+    };
 }
 
 fn buildLockfile(

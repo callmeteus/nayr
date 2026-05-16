@@ -77,6 +77,10 @@ pub const BatchResult = struct {
     meta: ?PackageMetadata,
     /// Non-null when the fetch or parse failed.
     err: ?anyerror,
+    /// Human-readable description of the failure (e.g. "Not found (url: ...)").
+    /// Owned by the allocator passed to fetchMetadataBatch; caller must free.
+    /// Null when err is null or no detailed message is available.
+    err_msg: ?[]const u8 = null,
 };
 
 /// Fetches registry metadata for multiple packages in a single curl invocation.
@@ -240,17 +244,20 @@ pub fn fetchMetadataBatch(
         defer allocator.free(body);
 
         r.meta = parseMetadata(allocator, body) catch |err| {
-            // Enrich the registry error message with the URL that was tried.
+            // Store per-result error message to avoid cross-contamination when
+            // multiple items in the same batch fail: the global last_registry_error_buf
+            // would be overwritten by each failing item, causing earlier items to
+            // see later items' error messages when the resolver reads them sequentially.
             if (err == error.RegistryError) {
                 const prev = peekLastRegistryError();
                 if (full_url) |u| {
-                    var enriched_buf: [512]u8 = undefined;
-                    const enriched = std.fmt.bufPrint(
-                        &enriched_buf,
+                    r.err_msg = std.fmt.allocPrint(
+                        allocator,
                         "{s} (url: {s})",
-                        .{ if (prev.len > 0) prev else "error", u },
-                    ) catch prev;
-                    setLastRegistryError(enriched);
+                        .{ if (prev.len > 0) prev else "Not found", u },
+                    ) catch null;
+                } else if (prev.len > 0) {
+                    r.err_msg = allocator.dupe(u8, prev) catch null;
                 }
             }
             r.err = err;
