@@ -374,7 +374,13 @@ pub fn resolve(
                 const lock_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ req.name, effective_range });
                 defer allocator.free(lock_key);
                 if (existing_lock.get(lock_key)) |entry| {
-                    if (semver.satisfies(allocator, entry.version, effective_range)) {
+                    // A lockfile entry whose `resolved` field is an absolute local
+                    // path is machine-specific and must never be trusted on other
+                    // machines.  Fall through and re-resolve from the original dep
+                    // specifier (git URL, registry, etc.) so a portable entry is
+                    // written on the next lockfile flush.
+                    const resolved_is_local = entry.resolved.len > 0 and entry.resolved[0] == '/';
+                    if (semver.satisfies(allocator, entry.version, effective_range) and !resolved_is_local) {
                         const map_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ req.name, entry.version });
 
                         // Record range → resolved key for lockfile pattern generation.
@@ -1136,6 +1142,14 @@ fn buildLockfile(
     while (it.next()) |kv| {
         const pkg = kv.value_ptr;
         const pkg_key = kv.key_ptr.*; // "name@version"
+
+        // Link-registry packages resolve to a local dev checkout that is
+        // machine-specific.  Writing the absolute path as `resolved` would
+        // break the lockfile on any other machine.  Skip them entirely: on
+        // machines where the link registry is absent nayr re-resolves from
+        // the original dep specifier (git URL, registry URL, etc.) and writes
+        // a portable entry at that point.
+        if (pkg.is_linked) continue;
 
         // Build patterns list: start with the canonical "name@version" pattern,
         // then append all collected request-range patterns.
