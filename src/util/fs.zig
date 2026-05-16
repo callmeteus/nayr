@@ -155,6 +155,12 @@ fn walkGlob(
 ) !void {
     var iter = dir.iterate();
     while (try iter.next()) |entry| {
+        // Never descend into node_modules - it is never a workspace source dir
+        // and may contain thousands of packages, making the traversal extremely slow.
+        if (std.mem.eql(u8, entry.name, "node_modules")) continue;
+        // Skip hidden directories (e.g. .git, .cache).
+        if (entry.name.len > 0 and entry.name[0] == '.') continue;
+
         const entry_rel = if (rel.len == 0)
             try allocator.dupe(u8, entry.name)
         else
@@ -165,8 +171,34 @@ fn walkGlob(
             try results.append(try std.fs.path.join(allocator, &.{ base_dir, entry_rel }));
         }
 
-        // Recurse into subdirectories when the pattern has further segments.
+        // Only recurse into directories that could lead to a match.
+        // For patterns without **, only recurse when the current entry
+        // is a proper prefix of the pattern's directory part. This prevents
+        // walking into sibling branches that can never yield a match.
         if (entry.kind == .directory and patternHasMoreSegments(pattern, entry_rel)) {
+            // Without **, the current path must be a prefix of the pattern to recurse.
+            if (std.mem.indexOf(u8, pattern, "**") == null) {
+                // Build the directory prefix of the pattern up to the same depth.
+                const depth = std.mem.count(u8, entry_rel, "/") + 1;
+                var pat_prefix_end: usize = 0;
+                var slashes_seen: usize = 0;
+                for (pattern, 0..) |ch, i| {
+                    if (ch == '/') {
+                        slashes_seen += 1;
+                        if (slashes_seen == depth) {
+                            pat_prefix_end = i;
+                            break;
+                        }
+                    }
+                } else {
+                    pat_prefix_end = pattern.len;
+                }
+                const pat_prefix = pattern[0..pat_prefix_end];
+                // If the pattern prefix so far doesn't glob-match the current
+                // relative path, no child of this dir can match - skip it.
+                if (!globMatch(pat_prefix, entry_rel)) continue;
+            }
+
             const sub_path = try std.fs.path.join(allocator, &.{ base_dir, entry_rel });
             defer allocator.free(sub_path);
             var sub_dir = std.fs.openDirAbsolute(sub_path, .{ .iterate = true }) catch continue;

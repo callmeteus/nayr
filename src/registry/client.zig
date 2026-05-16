@@ -415,10 +415,15 @@ fn curlGet(
     url: []const u8,
     auth_token: ?[]const u8,
 ) ![]const u8 {
+    var owned = std.ArrayList([]const u8).init(allocator);
+    defer {
+        for (owned.items) |s| allocator.free(s);
+        owned.deinit();
+    }
     var argv = std.ArrayList([]const u8).init(allocator);
     defer argv.deinit();
 
-    try buildCurlBaseArgs(&argv, auth_token);
+    try buildCurlBaseArgs(&argv, &owned, auth_token);
     try argv.append("-H");
     // Use the abbreviated packument format: only fields needed for installation
     // (dist, dependencies, bin, dist-tags).  Much smaller than the full packument
@@ -449,10 +454,15 @@ fn curlDownloadToFile(
     dest_path: []const u8,
     auth_token: ?[]const u8,
 ) !void {
+    var owned = std.ArrayList([]const u8).init(allocator);
+    defer {
+        for (owned.items) |s| allocator.free(s);
+        owned.deinit();
+    }
     var argv = std.ArrayList([]const u8).init(allocator);
     defer argv.deinit();
 
-    try buildCurlBaseArgs(&argv, auth_token);
+    try buildCurlBaseArgs(&argv, &owned, auth_token);
     try argv.append("-o");
     try argv.append(dest_path); // output file before URL
     try argv.append(url); // URL last
@@ -485,8 +495,12 @@ fn curlDownloadToFile(
 /// Appends the common curl flags shared by all requests.
 /// The URL is NOT appended by this function - callers must append it last,
 /// after any `-o <file>` or other per-call flags.
+///
+/// Any heap-allocated strings (e.g. auth header) are appended to `owned`
+/// so callers can free them after the child process has been waited on.
 fn buildCurlBaseArgs(
     argv: *std.ArrayList([]const u8),
+    owned: *std.ArrayList([]const u8),
     auth_token: ?[]const u8,
 ) !void {
     try argv.append("curl");
@@ -506,6 +520,7 @@ fn buildCurlBaseArgs(
 
     if (auth_token) |tok| {
         const header = try std.fmt.allocPrint(argv.allocator, "Authorization: Bearer {s}", .{tok});
+        try owned.append(header);
         try argv.append("-H");
         try argv.append(header);
     }

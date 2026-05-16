@@ -19,7 +19,13 @@ const IoTrace = @import("util/io_trace.zig").IoTrace;
 pub fn main() !void {
     // Use a GeneralPurposeAllocator for the CLI lifetime. Each sub-phase
     // (resolve, fetch, link) will create its own arena on top of this.
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    // thread_safe = true is required because the fetch and resolve phases
+    // spawn thread pools that allocate/free on this same allocator concurrently
+    // (fetchWorker via parent_alloc, cache.store via self.allocator, and the
+    // resolver's metadata batch workers). Without the mutex, concurrent access
+    // to the GPA's internal freelists silently corrupts them, manifesting as
+    // ever-growing RSS (allocations are "lost" and never returned to the OS).
+    var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

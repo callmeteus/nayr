@@ -39,7 +39,7 @@ pub const InstallOptions = struct {
     ignore_scripts: bool = false,
     /// Skip nayr-linked and git-based packages (useful for offline / intranet-free installs).
     skip_links: bool = false,
-    concurrency: u32 = 32,
+    concurrency: u32 = 8,
 };
 
 // ============================================================================
@@ -189,6 +189,10 @@ pub fn run(
     defer cache.deinit();
 
     writer.emit(.{ .info = "Fetching packages..." });
+    {
+        const dbg = std.io.getStdErr().writer();
+        dbg.print("[debug] phase2: starting fetchAll with {d} resolved packages\n", .{resolution.packages.count()}) catch {};
+    }
     try fetcher_mod.fetchAll(
         allocator,
         &resolution.packages,
@@ -197,8 +201,16 @@ pub fn run(
         writer,
         .{ .concurrency = opts.concurrency },
     );
+    {
+        const dbg = std.io.getStdErr().writer();
+        dbg.print("[debug] phase2: fetchAll done\n", .{}) catch {};
+    }
 
     // --- Phase 3: Hoist ---
+    {
+        const dbg = std.io.getStdErr().writer();
+        dbg.print("[debug] phase3: starting workspace discovery\n", .{}) catch {};
+    }
     const workspaces = try ws_discovery.discover(allocator, cwd);
     defer {
         for (workspaces) |*ws| {
@@ -238,6 +250,10 @@ pub fn run(
     }
 
     const hoisted = try hoister_mod.hoist(allocator, &resolution.packages, &checker, &root_dep_ranges);
+    {
+        const dbg = std.io.getStdErr().writer();
+        dbg.print("[debug] phase3: hoist done -> {d} hoisted entries\n", .{hoisted.len}) catch {};
+    }
     defer {
         for (hoisted) |hp| allocator.free(hp.install_path);
         allocator.free(hoisted);

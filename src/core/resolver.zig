@@ -165,7 +165,14 @@ pub fn resolve(
 
     var existing_lock: Lockfile = blk: {
         if (std.fs.accessAbsolute(nayr_lock_path, .{})) |_| {
-            break :blk try nayr_fmt.parseFile(allocator, nayr_lock_path);
+            // If the file exists but is not a recognized nayr lockfile (e.g. a
+            // leftover from another tool or an older format), fall through and
+            // try yarn.lock instead of aborting the install.
+            if (nayr_fmt.parseFile(allocator, nayr_lock_path)) |lock| {
+                break :blk lock;
+            } else |err| {
+                if (err != error.NotNayrLockfile) return err;
+            }
         } else |_| {}
         if (std.fs.accessAbsolute(yarn_lock_path, .{})) |_| {
             break :blk try yarn_v1.parseFile(allocator, yarn_lock_path);
@@ -300,6 +307,7 @@ pub fn resolve(
                     try resolved_set.put(allocator, key, rp);
                 } else {
                     allocator.free(key);
+                    allocator.free(rp.name);
                     allocator.free(rp.version);
                 }
                 writer.emit(.{ .resolve_progress = .{

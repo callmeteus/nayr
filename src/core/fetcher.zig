@@ -29,7 +29,7 @@ const Config = config_types.Config;
 /// Controls the fetcher's parallelism and behaviour.
 pub const FetcherOptions = struct {
     /// Number of concurrent download threads.
-    concurrency: u32 = 16,
+    concurrency: u32 = 8,
 };
 
 // ============================================================================
@@ -72,6 +72,14 @@ pub fn fetchAll(
     }
 
     if (pending.items.len == 0) return;
+
+    {
+        const dbg = std.io.getStdErr().writer();
+        dbg.print("[debug] fetcher: {d} cache hits, {d} to download\n", .{
+            packages.count() - pending.items.len,
+            pending.items.len,
+        }) catch {};
+    }
 
     // Atomic counter: threads use CAS to grab the next work item.
     var next_idx = std.atomic.Value(u32).init(0);
@@ -116,15 +124,21 @@ const SharedFetchState = struct {
 /// Worker function executed by each fetch thread.
 ///
 /// Threads compete for work items using a lock-free atomic counter. Each
-/// thread creates its own arena allocator and HTTP client.
+/// thread creates its own arena allocator, reset after every package so that
+/// tarball buffers (up to 64 MB each) are freed promptly instead of
+/// accumulating for the lifetime of the thread.
 fn fetchWorker(shared: *const SharedFetchState, parent_alloc: std.mem.Allocator) void {
-    // Per-thread arena: freed at the end of the thread, no allocator contention.
-    var arena = std.heap.ArenaAllocator.init(parent_alloc);
+    // Use page_allocator as the arena backing so that reset(.free_all) calls
+    // munmap() and actually returns pages to the OS after every package.
+    // With retain_capacity + GPA backing, each thread permanently holds the
+    // largest tarball slab it ever saw (up to 64 MB), and with 32 threads
+    // that easily OOMs a machine with < 2 GB RAM.
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    const allocator = arena.allocator();
 
-    // Per-thread HTTP client: each thread has its own connection pool.
-    var client = registry_client.RegistryClient.init(allocator, shared.config);
+    // The client uses parent_alloc so that its per-request defer-frees are
+    // real frees, not arena no-ops.  RegistryClient holds no long-lived state.
+    var client = registry_client.RegistryClient.init(parent_alloc, shared.config);
     defer client.deinit();
 
     while (true) {
@@ -132,7 +146,21 @@ fn fetchWorker(shared: *const SharedFetchState, parent_alloc: std.mem.Allocator)
         const idx = shared.next_idx.fetchAdd(1, .acquire);
         if (idx >= shared.pending.len) break;
 
+        // Free all arena pages back to the OS before starting the next package.
+        // Peak RSS per thread is bounded to roughly one tarball at a time
+        // (~avg 2 MB, max 64 MB) instead of accumulating the high-water mark
+        // of every tarball ever processed by this thread.
+        _ = arena.reset(.free_all);
+        const allocator = arena.allocator();
+
         const pkg = shared.pending[idx];
+
+        {
+            const dbg = std.io.getStdErr().writer();
+            dbg.print("[debug] fetch [{d}/{d}] start: {s}@{s}\n", .{
+                idx + 1, shared.pending.len, pkg.name, pkg.version,
+            }) catch {};
+        }
 
         // Use a per-package temp path to avoid race conditions between threads
         // all writing to the same fixed temp file.
