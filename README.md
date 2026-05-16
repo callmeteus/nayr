@@ -181,6 +181,7 @@ nayr cache clean           # clear the global cache
 | `--no-color` | Disable ANSI colours |
 | `--cwd <path>` | Set working directory |
 | `--frozen-lockfile` | Fail if lockfile would change |
+| `--no-frozen-lockfile` | Allow lockfile updates (overrides a prior `--frozen-lockfile` in the same argv) |
 | `--production` | Skip devDependencies |
 | `--version` | Print version and exit |
 | `--help` / `-h` | Print help |

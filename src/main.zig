@@ -32,7 +32,7 @@ pub fn main() !void {
         const msg = switch (err) {
             error.NotYarnV1Lockfile => "yarn.lock found but it is not a Yarn v1 lockfile (Yarn Berry / PnP is not supported).",
             error.FileNotFound => "No package.json found in the current directory. Run nayr inside a Node.js project.",
-            error.FrozenLockfileChanged => "--frozen-lockfile is set but the lockfile would need to be updated.",
+            error.FrozenLockfileChanged => "Lockfile would need to be updated but frozen mode is on. Omit --frozen-lockfile, pass --no-frozen-lockfile, or fix the lockfile.",
             error.NetworkError => "Network request failed. Check your internet connection and registry URL.\n       (hint: run with --verbose for more details)",
             error.HttpError => "Registry returned an HTTP error. Common causes: wrong registry URL, missing auth token, or package does not exist.",
             error.RegistryError => "Registry returned an error response - see the message above for details.",

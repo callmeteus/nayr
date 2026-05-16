@@ -330,6 +330,7 @@ fn parseInstallOpts(args: []const []const u8, config: *const Config) InstallOpti
 
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--frozen-lockfile")) opts.frozen_lockfile = true;
+        if (std.mem.eql(u8, arg, "--no-frozen-lockfile")) opts.frozen_lockfile = false;
         if (std.mem.eql(u8, arg, "--production") or std.mem.eql(u8, arg, "--prod")) opts.production = true;
         if (std.mem.eql(u8, arg, "--include-optional")) opts.include_optional = true;
         if (std.mem.eql(u8, arg, "--ignore-optional")) opts.ignore_optional = true;
