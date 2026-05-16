@@ -49,6 +49,7 @@ pub fn run(
 
 fn runInfo(allocator: std.mem.Allocator, cwd: []const u8, writer: output.Writer) !void {
     const workspaces = try ws_discovery.discover(allocator, cwd);
+    defer ws_discovery.freeDiscovered(allocator, workspaces);
 
     if (workspaces.len == 0) {
         writer.emit(.{ .info = "no workspaces found" });
@@ -77,6 +78,7 @@ fn runScriptAll(
     }
     const script_name = args[0];
     const workspaces = try ws_discovery.discover(allocator, cwd);
+    defer ws_discovery.freeDiscovered(allocator, workspaces);
 
     for (workspaces) |ws| {
         const script_cmd = ws.manifest.scripts.get(script_name) orelse continue;
@@ -101,6 +103,7 @@ fn runInWorkspace(
     writer: output.Writer,
 ) !void {
     const workspaces = try ws_discovery.discover(allocator, cwd);
+    defer ws_discovery.freeDiscovered(allocator, workspaces);
 
     for (workspaces) |ws| {
         const name = ws.manifest.name orelse continue;
@@ -118,6 +121,19 @@ fn runInWorkspace(
             writer.emit(.{ .script_start = .{ .name = name, .script = script_name } });
             _ = try platform.runScript(allocator, script_cmd, ws.path);
             return;
+        }
+
+        // `nayr workspace <name> <script>` — yarn compatibility: if the first
+        // argument matches a script in the workspace manifest, run it directly
+        // without requiring the explicit `run` prefix.  This allows
+        //   yarn workspace @typr/js build
+        // (stored as "build": "tsc -p tsconfig.json") to work as expected.
+        if (cmd_args.len == 1) {
+            if (ws.manifest.scripts.get(cmd_args[0])) |script_cmd| {
+                writer.emit(.{ .script_start = .{ .name = name, .script = cmd_args[0] } });
+                _ = try platform.runScript(allocator, script_cmd, ws.path);
+                return;
+            }
         }
 
         // Run an arbitrary command in the workspace directory.

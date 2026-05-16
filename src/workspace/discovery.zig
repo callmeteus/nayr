@@ -42,6 +42,7 @@ pub const WorkspacePackage = struct {
 ///
 /// ## Returns
 /// Slice of `WorkspacePackage`. Caller owns the slice and each `manifest`.
+/// Free with `freeDiscovered`.
 pub fn discover(allocator: std.mem.Allocator, root_dir: []const u8) ![]WorkspacePackage {
     const root_manifest_path = try std.fs.path.join(allocator, &.{ root_dir, "package.json" });
     defer allocator.free(root_manifest_path);
@@ -107,6 +108,23 @@ pub fn discover(allocator: std.mem.Allocator, root_dir: []const u8) ![]Workspace
 /// - `packages`: The slice returned by `discover`.
 ///
 /// ## Returns
+/// Frees a workspace slice returned by `discover`.
+///
+/// ## Parameters
+/// - `allocator`: Must match the allocator passed to `discover`.
+/// - `workspaces`: The slice returned by `discover`.
+///
+/// ## Returns
+/// Nothing.
+pub fn freeDiscovered(allocator: std.mem.Allocator, workspaces: []WorkspacePackage) void {
+    for (workspaces) |*ws| {
+        allocator.free(ws.path);
+        allocator.free(ws.rel_path);
+        ws.manifest.deinit(allocator);
+    }
+    allocator.free(workspaces);
+}
+
 /// A map of package name → absolute path. Caller must call `.deinit()`.
 pub fn buildNameMap(
     allocator: std.mem.Allocator,
