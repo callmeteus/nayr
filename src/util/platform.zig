@@ -222,8 +222,18 @@ pub fn copyFile(src: []const u8, dest: []const u8) !void {
     if (builtin.os.tag == .linux) {
         return copyFileLinux(src, dest);
     }
-    // Generic fallback: std.fs buffered copy.
-    try fs.copyFileAbsolute(src, dest, .{});
+    // Generic fallback: preserve source permissions then copy content.
+    const src_file = try fs.openFileAbsolute(src, .{});
+    defer src_file.close();
+    const stat = try src_file.stat();
+    const dest_file = try fs.createFileAbsolute(dest, .{ .mode = stat.mode });
+    defer dest_file.close();
+    var buf: [65536]u8 = undefined;
+    while (true) {
+        const n = try src_file.read(&buf);
+        if (n == 0) break;
+        try dest_file.writeAll(buf[0..n]);
+    }
 }
 
 /// Atomically replace `dest` with `src` using a rename.
@@ -454,7 +464,8 @@ fn copyFileLinux(src: []const u8, dest: []const u8) !void {
     defer src_file.close();
     const stat = try src_file.stat();
 
-    const dest_file = try fs.createFileAbsolute(dest, .{});
+    // Preserve the source file's permission bits (including the executable bit).
+    const dest_file = try fs.createFileAbsolute(dest, .{ .mode = stat.mode });
     defer dest_file.close();
 
     var offset_in: u64 = 0;
