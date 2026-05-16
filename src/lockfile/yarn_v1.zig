@@ -21,6 +21,7 @@
 //! ```
 
 const std = @import("std");
+const IoTrace = @import("../util/io_trace.zig").IoTrace;
 const types = @import("types.zig");
 const LockfileEntry = types.LockfileEntry;
 const Lockfile = types.Lockfile;
@@ -38,7 +39,10 @@ const Lockfile = types.Lockfile;
 /// ## Returns
 /// A `Lockfile` populated with all entries, or an error.
 pub fn parseFile(allocator: std.mem.Allocator, path: []const u8) !Lockfile {
-    const file = try std.fs.openFileAbsolute(path, .{});
+    const file = std.fs.openFileAbsolute(path, .{}) catch |err| {
+        if (err == error.FileNotFound) IoTrace.recordMissingPath(path);
+        return err;
+    };
     defer file.close();
     const contents = try file.readToEndAlloc(allocator, 32 * 1024 * 1024); // 32 MB max
     defer allocator.free(contents);

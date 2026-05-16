@@ -7,6 +7,7 @@
 //! `@import("src/...")` to access source modules.
 
 comptime {
+    _ = @import("tests/io_trace_test.zig");
     _ = @import("tests/semver_test.zig");
     _ = @import("tests/lockfile_test.zig");
     _ = @import("tests/resolver_test.zig");

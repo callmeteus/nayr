@@ -5,6 +5,7 @@
 //! are silently ignored during parsing.
 
 const std = @import("std");
+const IoTrace = @import("io_trace.zig").IoTrace;
 
 // ============================================================================
 // PackageJson
@@ -147,7 +148,10 @@ pub const PackageJson = struct {
 /// A fully populated `PackageJson`, or an error if the file cannot be read
 /// or is not valid JSON.
 pub fn parseFile(allocator: std.mem.Allocator, path: []const u8) !PackageJson {
-    const file = try std.fs.openFileAbsolute(path, .{});
+    const file = std.fs.openFileAbsolute(path, .{}) catch |err| {
+        if (err == error.FileNotFound) IoTrace.recordMissingPath(path);
+        return err;
+    };
     defer file.close();
     const contents = try file.readToEndAlloc(allocator, 4 * 1024 * 1024); // 4 MB max
     defer allocator.free(contents);

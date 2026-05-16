@@ -25,6 +25,7 @@
 const std = @import("std");
 const config_types = @import("../config/types.zig");
 const reg_types = @import("types.zig");
+const IoTrace = @import("../util/io_trace.zig").IoTrace;
 const Config = config_types.Config;
 const PackageMetadata = reg_types.PackageMetadata;
 const VersionInfo = reg_types.VersionInfo;
@@ -36,7 +37,7 @@ const VersionInfo = reg_types.VersionInfo;
 /// Holds the last registry-returned error string (e.g. "no such package
 /// available") so the caller can emit it through the proper output channel
 /// instead of printing to stderr directly (which would corrupt the TUI).
-var last_registry_error_buf: [256]u8 = undefined;
+var last_registry_error_buf: [512]u8 = undefined;
 var last_registry_error_len: usize = 0;
 
 fn setLastRegistryError(msg: []const u8) void {
@@ -46,6 +47,12 @@ fn setLastRegistryError(msg: []const u8) void {
 }
 
 /// Returns the last registry error message, or an empty slice if none.
+/// Does NOT clear the buffer - takeLastRegistryError clears it.
+pub fn peekLastRegistryError() []const u8 {
+    return last_registry_error_buf[0..last_registry_error_len];
+}
+
+/// Returns the last registry error message and clears the buffer, or an empty slice if none.
 pub fn takeLastRegistryError() []const u8 {
     const s = last_registry_error_buf[0..last_registry_error_len];
     last_registry_error_len = 0;
@@ -193,7 +200,10 @@ pub fn fetchMetadataBatch(
     var child = std.process.Child.init(argv.items, allocator);
     child.stdout_behavior = .Ignore;
     child.stderr_behavior = .Pipe;
-    try child.spawn();
+    child.spawn() catch |err| {
+        if (err == error.FileNotFound) IoTrace.recordMissingPath("curl (not found in PATH - install curl)");
+        return err;
+    };
     const stderr_data = try child.stderr.?.reader().readAllAlloc(allocator, 64 * 1024);
     defer allocator.free(stderr_data);
     _ = try child.wait();
@@ -202,7 +212,19 @@ pub fn fetchMetadataBatch(
     const results = try allocator.alloc(BatchResult, items.len);
     for (items, temp_paths, results, 0..) |item, temp_path, *r, i| {
         r.* = BatchResult{ .idx = i, .meta = null, .err = null };
-        _ = item;
+
+        // Record the URL we tried before parsing so that if parseMetadata
+        // returns error.RegistryError the caller can show "Not found at <url>".
+        const scope = extractScope(item.name);
+        const registry_url = config.getRegistry(scope);
+        const encoded_for_err = encodeName(allocator, item.name) catch item.name;
+        defer if (encoded_for_err.ptr != item.name.ptr) allocator.free(encoded_for_err);
+        const full_url = std.fmt.allocPrint(
+            allocator,
+            "{s}/{s}",
+            .{ std.mem.trimRight(u8, registry_url, "/"), encoded_for_err },
+        ) catch null;
+        defer if (full_url) |u| allocator.free(u);
 
         const body = blk: {
             const f = std.fs.openFileAbsolute(temp_path, .{}) catch |err| {
@@ -218,6 +240,19 @@ pub fn fetchMetadataBatch(
         defer allocator.free(body);
 
         r.meta = parseMetadata(allocator, body) catch |err| {
+            // Enrich the registry error message with the URL that was tried.
+            if (err == error.RegistryError) {
+                const prev = peekLastRegistryError();
+                if (full_url) |u| {
+                    var enriched_buf: [512]u8 = undefined;
+                    const enriched = std.fmt.bufPrint(
+                        &enriched_buf,
+                        "{s} (url: {s})",
+                        .{ if (prev.len > 0) prev else "error", u },
+                    ) catch prev;
+                    setLastRegistryError(enriched);
+                }
+            }
             r.err = err;
             continue;
         };
@@ -420,7 +455,10 @@ fn curlDownloadToFile(
     var child = std.process.Child.init(argv.items, allocator);
     child.stdout_behavior = .Ignore;
     child.stderr_behavior = .Pipe;
-    try child.spawn();
+    child.spawn() catch |err| {
+        if (err == error.FileNotFound) IoTrace.recordMissingPath("curl (not found in PATH - install curl)");
+        return err;
+    };
 
     const stderr_buf = try child.stderr.?.reader().readAllAlloc(allocator, 8 * 1024);
     defer allocator.free(stderr_buf);
@@ -507,7 +545,10 @@ fn runCapture(allocator: std.mem.Allocator, argv: []const []const u8) !CaptureRe
     var child = std.process.Child.init(argv, allocator);
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Pipe;
-    try child.spawn();
+    child.spawn() catch |err| {
+        if (err == error.FileNotFound and argv.len > 0) IoTrace.recordMissingPath(argv[0]);
+        return err;
+    };
 
     // Read stdout first, then stderr. This is safe because curl with --silent
     // writes nothing to stderr on success and only a short error message on

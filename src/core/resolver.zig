@@ -38,6 +38,7 @@ const ws_discovery = @import("../workspace/discovery.zig");
 const ws_resolver = @import("../workspace/resolver.zig");
 const output = @import("../util/output.zig");
 const platform = @import("../util/platform.zig");
+const IoTrace = @import("../util/io_trace.zig").IoTrace;
 const PackageJson = json_util.PackageJson;
 const Lockfile = lockfile_types.Lockfile;
 const Config = config_types.Config;
@@ -1010,7 +1011,10 @@ fn resolveGitHash(allocator: std.mem.Allocator, url: []const u8) ![]const u8 {
     );
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Ignore;
-    try child.spawn();
+    child.spawn() catch |err| {
+        if (err == error.FileNotFound) IoTrace.recordMissingPath("git (not found in PATH)");
+        return err;
+    };
 
     const stdout = try child.stdout.?.reader().readAllAlloc(allocator, 256);
     defer allocator.free(stdout);

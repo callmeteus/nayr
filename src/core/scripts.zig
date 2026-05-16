@@ -13,6 +13,7 @@
 const std = @import("std");
 const json_util = @import("../util/json.zig");
 const output = @import("../util/output.zig");
+const IoTrace = @import("../util/io_trace.zig").IoTrace;
 const hoister = @import("hoister.zig");
 const HoistedPackage = hoister.HoistedPackage;
 
@@ -212,7 +213,17 @@ fn runScript(
     child.stdin_behavior = .Ignore;
     child.stdout_behavior = .Inherit;
     child.stderr_behavior = .Inherit;
-    const result = try child.spawnAndWait();
+    const result = child.spawnAndWait() catch |err| {
+        if (err == error.FileNotFound) {
+            var note_buf: [512]u8 = undefined;
+            if (std.fmt.bufPrint(&note_buf, "lifecycle spawn cwd={s} cmd={s}", .{ cwd, cmd })) |note| {
+                IoTrace.recordMissingPath(note);
+            } else |_| {
+                IoTrace.recordMissingPath("lifecycle spawn (path buffer too small)");
+            }
+        }
+        return err;
+    };
     return switch (result) {
         .Exited => |c| c,
         else => 1,

@@ -55,6 +55,36 @@ pub const GlobalOptions = struct {
     }
 };
 
+/// Resolves the process working directory to an absolute path for stable joins
+/// (e.g. `accessAbsolute` with `cwd` + `package.json`).
+///
+/// ## Parameters
+/// - `allocator` - Allocator for the returned path string.
+///
+/// ## Returns
+/// Canonical absolute cwd, or an error if neither realpath nor getcwd succeeds.
+fn resolveDefaultCwd(allocator: std.mem.Allocator) ![]const u8 {
+    return std.fs.cwd().realpathAlloc(allocator, ".") catch std.process.getCwdAlloc(allocator);
+}
+
+/// Resolves a user `--cwd` value to an absolute path when possible.
+///
+/// ## Parameters
+/// - `allocator` - Allocator for the returned path when resolution allocates.
+/// - `path` - Path from argv (absolute or relative to the process cwd).
+///
+/// ## Returns
+/// Canonical absolute path, or an error if the directory cannot be opened.
+fn resolveUserCwd(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    if (std.fs.path.isAbsolute(path)) {
+        var dir = try std.fs.openDirAbsolute(path, .{});
+        defer dir.close();
+        return try dir.realpathAlloc(allocator, ".");
+    }
+
+    return try std.fs.cwd().realpathAlloc(allocator, path);
+}
+
 // ============================================================================
 // Entry point
 // ============================================================================
@@ -321,9 +351,17 @@ fn parseGlobalOpts(allocator: std.mem.Allocator, args: []const []const u8) !Pars
         } else if (std.mem.eql(u8, arg, "--cwd") and i + 1 < args.len) {
             i += 1;
             // Replace the auto-detected cwd with the user-specified one.
-            if (opts.cwd_owned) allocator.free(opts.cwd);
-            opts.cwd = args[i];
-            opts.cwd_owned = false; // points into args slice, not owned
+            if (opts.cwd_owned) {
+                allocator.free(opts.cwd);
+            }
+
+            if (resolveUserCwd(allocator, args[i])) |resolved| {
+                opts.cwd = resolved;
+                opts.cwd_owned = true;
+            } else |_| {
+                opts.cwd = args[i];
+                opts.cwd_owned = false; // points into args slice, not owned
+            }
         } else {
             // First non-global arg: everything from here is the sub-command.
             break;
@@ -334,7 +372,7 @@ fn parseGlobalOpts(allocator: std.mem.Allocator, args: []const []const u8) !Pars
 }
 
 fn defaultGlobalOpts(allocator: std.mem.Allocator) GlobalOptions {
-    const cwd = std.process.getCwdAlloc(allocator) catch return .{
+    const cwd = resolveDefaultCwd(allocator) catch return .{
         .format = output.Format.autoDetect(),
         .verbose = false,
         .silent = false,

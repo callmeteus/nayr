@@ -107,7 +107,7 @@ fn interactiveMenu(allocator: std.mem.Allocator, global_path: []const u8) !void 
             "← Exit",
         };
 
-        const result = try prompts.select(w, theme, "What would you like to configure?", section_items, 0);
+        const result = try prompts.select(w, theme, "What would you like to configure?", &section_items, 0);
         switch (result) {
             .cancelled => break,
             .selected => |idx| {
