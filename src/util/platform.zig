@@ -12,6 +12,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const fs = std.fs;
+const scripts = @import("../core/scripts.zig");
 
 // ============================================================================
 // Directory paths
@@ -321,9 +322,6 @@ pub fn runScriptWithArgs(
     cwd: []const u8,
     extra_args: []const []const u8,
 ) !u8 {
-    const bin_dir = try std.fs.path.join(allocator, &.{ cwd, "node_modules", ".bin" });
-    defer allocator.free(bin_dir);
-
     // Build the full command, appending any extra args.
     const full_cmd = if (extra_args.len > 0) blk: {
         var parts = std.ArrayList([]const u8).init(allocator);
@@ -346,20 +344,13 @@ pub fn runScriptWithArgs(
     child.stdout_behavior = .Inherit;
     child.stderr_behavior = .Inherit;
 
-    // Inject node_modules/.bin into PATH so scripts can call local binaries.
+    // Inject ~/.nayr/shims (yarn -> nayr shim) and node_modules/.bin into PATH
+    // so that any `yarn` call inside scripts is transparently handled by nayr.
     var env_map = try std.process.getEnvMap(allocator);
     defer env_map.deinit();
-    if (env_map.get("PATH")) |old_path| {
-        const new_path = try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{
-            bin_dir,
-            std.fs.path.delimiter,
-            old_path,
-        });
-        defer allocator.free(new_path);
-        try env_map.put("PATH", new_path);
-    } else {
-        try env_map.put("PATH", bin_dir);
-    }
+    const new_path = try scripts.buildScriptPath(allocator, cwd);
+    defer allocator.free(new_path);
+    try env_map.put("PATH", new_path);
     child.env_map = &env_map;
 
     const result = try child.spawnAndWait();

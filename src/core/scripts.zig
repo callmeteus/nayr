@@ -239,7 +239,7 @@ fn runScript(
 ///   2. `{root}/node_modules/.bin`   - hoisted / root-level executables
 ///
 /// The caller owns the returned slice.
-fn buildScriptPath(allocator: std.mem.Allocator, root_dir: []const u8) ![]const u8 {
+pub fn buildScriptPath(allocator: std.mem.Allocator, root_dir: []const u8) ![]const u8 {
     const root_bin = try std.fs.path.join(allocator, &.{ root_dir, "node_modules", ".bin" });
     defer allocator.free(root_bin);
 
