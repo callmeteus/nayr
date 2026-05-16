@@ -37,6 +37,8 @@ pub const InstallOptions = struct {
     flat: bool = false,
     check_files: bool = false,
     ignore_scripts: bool = false,
+    /// Skip nayr-linked and git-based packages (useful for offline / intranet-free installs).
+    skip_links: bool = false,
     concurrency: u32 = 32,
 };
 
@@ -268,12 +270,25 @@ pub fn run(
 
     // --- Phase 4: Link ---
     writer.emit(.{ .info = "Linking packages..." });
-    try linker_mod.link(allocator, cwd, hoisted, &cache, &ws_paths, writer);
+    // With --skip-links, build a filtered slice that excludes nayr-linked and
+    // git-based packages so offline / intranet-free installs succeed.
+    const link_hoisted = if (opts.skip_links) blk: {
+        var filtered = std.ArrayList(hoister_mod.HoistedPackage).init(allocator);
+        defer filtered.deinit();
+        for (hoisted) |hp| {
+            if (hp.pkg.is_linked or hp.pkg.is_git) continue;
+            try filtered.append(hp);
+        }
+        break :blk try filtered.toOwnedSlice();
+    } else hoisted;
+    defer if (opts.skip_links) allocator.free(link_hoisted);
+
+    try linker_mod.link(allocator, cwd, link_hoisted, &cache, &ws_paths, writer);
 
     // --- Phase 5: Scripts ---
     if (!opts.ignore_scripts and !config.ignore_scripts) {
         writer.emit(.{ .info = "Running lifecycle scripts..." });
-        try scripts_mod.runAll(allocator, cwd, hoisted, writer);
+        try scripts_mod.runAll(allocator, cwd, link_hoisted, config.git_build_deps, writer);
         try scripts_mod.runRootPost(allocator, cwd, writer);
     }
 
@@ -340,6 +355,7 @@ fn parseInstallOpts(args: []const []const u8, config: *const Config) InstallOpti
         if (std.mem.eql(u8, arg, "--flat")) opts.flat = true;
         if (std.mem.eql(u8, arg, "--check-files")) opts.check_files = true;
         if (std.mem.eql(u8, arg, "--ignore-scripts")) opts.ignore_scripts = true;
+        if (std.mem.eql(u8, arg, "--skip-links")) opts.skip_links = true;
         if (std.mem.startsWith(u8, arg, "--concurrency=")) {
             opts.concurrency = std.fmt.parseInt(u32, arg["--concurrency=".len..], 10) catch opts.concurrency;
         }

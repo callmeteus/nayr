@@ -83,5 +83,14 @@ pub fn load(allocator: std.mem.Allocator, cwd: []const u8) !Config {
     defer allocator.free(proj_nayrrc);
     try nayrrc.parseFile(&config, proj_nayrrc, true);
 
+    // ---------- Environment variable overrides (highest priority) ----------
+
+    if (std.process.getEnvVarOwned(allocator, "NAYR_GIT_BUILD_DEPS")) |val| {
+        defer allocator.free(val);
+        if (std.mem.eql(u8, val, "1") or std.mem.eql(u8, val, "true")) {
+            config.git_build_deps = true;
+        }
+    } else |_| {}
+
     return config;
 }

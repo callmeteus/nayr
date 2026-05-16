@@ -34,11 +34,16 @@ const HoistedPackage = hoister.HoistedPackage;
 /// - `allocator`: Scratch allocator.
 /// - `root_dir`: Project root (for resolving install paths).
 /// - `hoisted`: The hoisted package layout.
+/// - `build_git_deps`: When true, also run `prepare` (or `build` as fallback)
+///   for git dependencies after their normal lifecycle scripts. This compiles
+///   TypeScript packages that do not ship a pre-built `dist/`. Controlled by
+///   `[git] build-deps = true` in `.nayrrc` or `NAYR_GIT_BUILD_DEPS=1`.
 /// - `writer`: Output event sink.
 pub fn runAll(
     allocator: std.mem.Allocator,
     root_dir: []const u8,
     hoisted: []const HoistedPackage,
+    build_git_deps: bool,
     writer: output.Writer,
 ) !void {
     // Build the augmented PATH once (reused for every script in this run).
@@ -61,6 +66,41 @@ pub fn runAll(
 
         for (lifecycle_scripts) |script_name| {
             if (manifest.scripts.get(script_name)) |script_cmd| {
+                writer.emit(.{ .script_start = .{ .name = hp.name, .script = script_name } });
+
+                const exit_code = runScript(allocator, script_cmd, pkg_dir, augmented_path) catch |err| {
+                    const emsg = std.fmt.allocPrint(
+                        allocator,
+                        "script {s} [{s}] failed: {s}",
+                        .{ script_name, hp.name, @errorName(err) },
+                    ) catch {
+                        continue;
+                    };
+                    defer allocator.free(emsg);
+                    writer.emit(.{ .warning = emsg });
+                    continue;
+                };
+
+                if (exit_code != 0) {
+                    const wmsg = try std.fmt.allocPrint(
+                        allocator,
+                        "script {s} [{s}] exited with code {d}",
+                        .{ script_name, hp.name, exit_code },
+                    );
+                    defer allocator.free(wmsg);
+                    writer.emit(.{ .warning = wmsg });
+                }
+            }
+        }
+
+        // Git dependencies: optionally run `prepare` (or `build` as fallback)
+        // to compile the package. Controlled by `build_git_deps` (from config
+        // `[git] build-deps = true` or env `NAYR_GIT_BUILD_DEPS=1`).
+        if (build_git_deps and hp.pkg.is_git) {
+            const prepare_script = manifest.scripts.get("prepare");
+            const build_script = manifest.scripts.get("build");
+            if (prepare_script orelse build_script) |script_cmd| {
+                const script_name = if (prepare_script != null) "prepare" else "build";
                 writer.emit(.{ .script_start = .{ .name = hp.name, .script = script_name } });
 
                 const exit_code = runScript(allocator, script_cmd, pkg_dir, augmented_path) catch |err| {

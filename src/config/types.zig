@@ -89,6 +89,15 @@ pub const Config = struct {
     /// When false, nayr always re-resolves to the remote HEAD.
     git_pin_hash: bool = true,
 
+    /// When true, nayr runs `prepare` (or `build` if `prepare` is absent) for
+    /// git dependencies after cloning them.  This compiles TypeScript packages
+    /// that do not ship a pre-built `dist/`.  Default false because it requires
+    /// the package's devDependencies (e.g. `tsc`) to be available at install time.
+    ///
+    /// Enable via `.nayrrc`:   `[git]\nbuild-deps = true`
+    /// Enable via environment: `NAYR_GIT_BUILD_DEPS=1`
+    git_build_deps: bool = false,
+
     /// GitHub organisations whose git deps should NOT be pinned to a hash.
     /// E.g. `["example"]` to always track HEAD for `example/*` repos.
     git_no_pin_orgs: []const []const u8 = &.{},

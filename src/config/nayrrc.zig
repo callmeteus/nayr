@@ -209,6 +209,8 @@ fn applyGitKey(
 
     if (std.mem.eql(u8, key, "pin-hash")) {
         if (overwrite) config.git_pin_hash = std.mem.eql(u8, val, "true");
+    } else if (std.mem.eql(u8, key, "build-deps")) {
+        if (overwrite) config.git_build_deps = std.mem.eql(u8, val, "true");
     } else if (std.mem.eql(u8, key, "no-pin-orgs")) {
         if (overwrite or config.git_no_pin_orgs.len == 0) {
             if (config.git_no_pin_orgs.len > 0) {
