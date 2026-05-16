@@ -100,6 +100,12 @@ pub fn runAll(
             const prepare_script = manifest.scripts.get("prepare");
             const build_script = manifest.scripts.get("build");
             if (prepare_script orelse build_script) |script_cmd| {
+                // Install the git dep's own node_modules before building.
+                // Yarn classic does the same (runs `yarn install` in the clone
+                // before `prepare`) so that devDependencies like `tsc` are
+                // available when the build script runs.
+                installGitDepDependencies(allocator, pkg_dir, augmented_path, hp.name, writer);
+
                 const script_name = if (prepare_script != null) "prepare" else "build";
                 writer.emit(.{ .script_start = .{ .name = hp.name, .script = script_name } });
 
@@ -222,6 +228,63 @@ const root_post_scripts = [_][]const u8{
     "postinstall",
     "prepare",
 };
+
+/// Installs a git dependency's own `node_modules` by running the current nayr
+/// binary with `install --ignore-scripts` inside `pkg_dir`.
+///
+/// This mirrors Yarn Classic behaviour: before running `prepare` on a git dep,
+/// Yarn installs the dep's dependencies (including devDependencies needed for
+/// compilation, e.g. `tsc`, `@clack/prompts`).
+///
+/// Errors are silenced - if the install fails the build step will surface the
+/// missing module error with a clear message.
+///
+/// ## Parameters
+/// - `allocator`: Scratch allocator.
+/// - `pkg_dir`: Absolute path to the installed git dep directory.
+/// - `path_override`: Augmented PATH for child process.
+/// - `name`: Package name (for warning messages).
+/// - `writer`: Output event sink.
+fn installGitDepDependencies(
+    allocator: std.mem.Allocator,
+    pkg_dir: []const u8,
+    path_override: ?[]const u8,
+    name: []const u8,
+    writer: output.Writer,
+) void {
+    // Resolve the running nayr binary so we call exactly the same version.
+    var self_buf: [4096]u8 = undefined;
+    const self_path = std.fs.selfExePath(&self_buf) catch {
+        writer.emit(.{ .warning = "git dep install: could not resolve nayr binary path" });
+        return;
+    };
+
+    const argv = &[_][]const u8{ self_path, "install", "--ignore-scripts" };
+    var child = std.process.Child.init(argv, allocator);
+    child.cwd = pkg_dir;
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Inherit;
+    child.stderr_behavior = .Inherit;
+
+    if (path_override) |p| {
+        var env_map = std.process.getEnvMap(allocator) catch return;
+        defer env_map.deinit();
+        env_map.put("PATH", p) catch return;
+        child.env_map = &env_map;
+        child.spawn() catch return;
+    } else {
+        child.spawn() catch return;
+    }
+    _ = child.wait() catch {
+        const wmsg = std.fmt.allocPrint(
+            allocator,
+            "git dep install failed for {s}",
+            .{name},
+        ) catch return;
+        defer allocator.free(wmsg);
+        writer.emit(.{ .warning = wmsg });
+    };
+}
 
 /// Runs a single script command in the given working directory.
 ///
