@@ -20,15 +20,20 @@ const builtin = @import("builtin");
 // Raw terminal mode
 // ============================================================================
 
+const is_posix = builtin.os.tag != .windows;
+
 /// Saved terminal state — returned by `enterRawMode`, passed to `leaveRawMode`.
-pub const RawMode = struct {
+/// On Windows this is a zero-size no-op struct.
+pub const RawMode = if (is_posix) struct {
     orig: std.posix.termios,
     fd: std.posix.fd_t,
-};
+} else struct {};
 
 /// Switches stdin to raw mode (no echo, no line buffering).
 /// Call `leaveRawMode` to restore the original settings.
+/// On Windows this is a no-op (interactive TUI is not supported there).
 pub fn enterRawMode() !RawMode {
+    if (comptime !is_posix) return RawMode{};
     const fd = std.io.getStdIn().handle;
     const orig = try std.posix.tcgetattr(fd);
     var raw = orig;
@@ -36,13 +41,14 @@ pub fn enterRawMode() !RawMode {
     raw.lflag.ECHO = false;
     raw.lflag.ISIG = false;
     raw.lflag.IEXTEN = false;
-    raw.cc[@intFromEnum(std.os.linux.V.MIN)] = 1;
-    raw.cc[@intFromEnum(std.os.linux.V.TIME)] = 0;
+    raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
+    raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
     try std.posix.tcsetattr(fd, .NOW, raw);
     return .{ .orig = orig, .fd = fd };
 }
 
 pub fn leaveRawMode(rm: RawMode) void {
+    if (comptime !is_posix) return;
     std.posix.tcsetattr(rm.fd, .NOW, rm.orig) catch {};
 }
 

@@ -1,28 +1,60 @@
 #!/bin/sh
 # nayr - wrapper script for the compiled Zig binary.
 #
-# When installed via npm/yarn (global or local), this script is the entry
-# point. It resolves the pre-built binary relative to its own location and
-# exec's into it, passing all arguments through.
-#
-# If the binary is missing (e.g. the package was installed from source without
-# a pre-build step), it attempts a release build using Zig.
+# Detects the current OS and CPU architecture, then selects the matching
+# pre-built binary from zig-out/bin/<arch>-<os>/nayr.  Falls back to the
+# native build (zig-out/bin/nayr) and, if that is also missing, attempts a
+# release build using Zig.
 
 set -e
 
-# Resolve the true directory of this script, following symlinks.
 SELF="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || "$0")"
 SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 NAYR_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-NAYR_BIN="$NAYR_ROOT/zig-out/bin/nayr"
+# --------------------------------------------------------------------------
+# Detect OS and arch, map to the Zig target triple used by `zig build cross`.
+# --------------------------------------------------------------------------
+_os="$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+_arch="$(uname -m 2>/dev/null)"
 
-# If the binary doesn't exist, try to build it.
-if [ ! -f "$NAYR_BIN" ]; then
-    echo "nayr: pre-built binary not found at $NAYR_BIN" >&2
+case "$_arch" in
+    x86_64|amd64)  _arch="x86_64"  ;;
+    aarch64|arm64) _arch="aarch64" ;;
+    *)             _arch=""         ;;
+esac
+
+case "$_os" in
+    linux)   _os="linux"   ;;
+    darwin)  _os="macos"   ;;
+    mingw*|msys*|cygwin*|windows*) _os="windows" ;;
+    *)       _os=""        ;;
+esac
+
+# Prefer the platform-specific cross-compiled binary (always baseline CPU).
+NAYR_BIN=""
+if [ -n "$_arch" ] && [ -n "$_os" ]; then
+    _candidate="$NAYR_ROOT/zig-out/bin/${_arch}-${_os}/nayr"
+    # Windows executables have a .exe extension.
+    [ "$_os" = "windows" ] && _candidate="${_candidate}.exe"
+    if [ -f "$_candidate" ]; then
+        NAYR_BIN="$_candidate"
+    fi
+fi
+
+# Fall back to the native build produced by `zig build`.
+if [ -z "$NAYR_BIN" ]; then
+    _native="$NAYR_ROOT/zig-out/bin/nayr"
+    if [ -f "$_native" ]; then
+        NAYR_BIN="$_native"
+    fi
+fi
+
+# Last resort: compile from source.
+if [ -z "$NAYR_BIN" ]; then
+    echo "nayr: pre-built binary not found" >&2
     echo "nayr: attempting release build (requires Zig in PATH)..." >&2
 
-    # Prefer ~/.local/bin/zig (pinned version) over any IDE-injected Zig.
     ZIG_BIN=""
     for candidate in "$HOME/.local/bin/zig" "$HOME/.local/zig/zig" "$(command -v zig 2>/dev/null)"; do
         if [ -f "$candidate" ] && [ -x "$candidate" ]; then
@@ -36,10 +68,12 @@ if [ ! -f "$NAYR_BIN" ]; then
         exit 1
     fi
 
-    (cd "$NAYR_ROOT" && "$ZIG_BIN" build -Doptimize=ReleaseFast) || {
+    (cd "$NAYR_ROOT" && "$ZIG_BIN" build -Doptimize=ReleaseFast -Dcpu=baseline) || {
         echo "nayr: build failed." >&2
         exit 1
     }
+
+    NAYR_BIN="$NAYR_ROOT/zig-out/bin/nayr"
 fi
 
 exec "$NAYR_BIN" "$@"
