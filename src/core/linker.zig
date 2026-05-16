@@ -72,7 +72,10 @@ pub fn link(
                     "could not symlink {s} → {s}: {s}",
                     .{ hp.name, ws_path, @errorName(err) },
                 ) catch null;
-                if (wmsg) |m| { defer allocator.free(m); writer.emit(.{ .warning = m }); }
+                if (wmsg) |m| {
+                    defer allocator.free(m);
+                    writer.emit(.{ .warning = m });
+                }
             };
             if (hp.pkg.is_linked) {
                 const msg = std.fmt.allocPrint(

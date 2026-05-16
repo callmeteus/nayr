@@ -84,6 +84,15 @@ zig build -Doptimize=ReleaseFast
 ./zig-out/bin/nayr --version
 ```
 
+### Linting
+
+```sh
+yarn lint       # zig fmt --check + ZLint (see docs/LINTING.md)
+yarn lint:fix   # apply zig fmt only
+```
+
+Project-specific Zig readability rules (blank line before `if`/`for`/etc., avoid huge inline blocks) are documented in [docs/LINTING.md](docs/LINTING.md). They are not auto-enforced; follow them in review.
+
 ---
 
 ## Usage

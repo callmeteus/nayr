@@ -5,9 +5,6 @@
 //! All rendering logic lives in output.zig; this module only exposes the
 //! raw terminal operations.
 
-const std = @import("std");
-const platform = @import("platform.zig");
-
 // ============================================================================
 // ANSI colour codes
 // ============================================================================

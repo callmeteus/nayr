@@ -3,7 +3,6 @@
 const std = @import("std");
 const semver = @import("../src/semver/parser.zig");
 const Version = semver.Version;
-const Range = semver.Range;
 
 test "version parse: simple" {
     const v = try Version.parse("1.2.3");

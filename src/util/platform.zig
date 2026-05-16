@@ -441,6 +441,7 @@ pub fn isStdoutTty() bool {
 /// Returns the terminal width in columns, or a sensible default (80).
 pub fn terminalWidth() u16 {
     if (builtin.os.tag == .linux or builtin.os.tag == .macos) {
+        // SAFETY: `ioctl(TIOCGWINSZ)` fully initializes `ws` when it returns 0.
         var ws: std.posix.winsize = undefined;
         const rc = std.posix.system.ioctl(
             std.io.getStdOut().handle,

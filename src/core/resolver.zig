@@ -33,7 +33,6 @@ const lockfile_types = @import("../lockfile/types.zig");
 const yarn_v1 = @import("../lockfile/yarn_v1.zig");
 const nayr_fmt = @import("../lockfile/nayr_format.zig");
 const registry_client = @import("../registry/client.zig");
-const reg_types = @import("../registry/types.zig");
 const config_types = @import("../config/types.zig");
 const ws_discovery = @import("../workspace/discovery.zig");
 const ws_resolver = @import("../workspace/resolver.zig");
@@ -1019,7 +1018,7 @@ fn resolveGitHash(allocator: std.mem.Allocator, url: []const u8) ![]const u8 {
 
     // Output format: "<hash>\t<ref>\n"
     const tab = std.mem.indexOfScalar(u8, stdout, '\t') orelse return error.GitHashNotFound;
-    return try allocator.dupe(u8, stdout[0..tab]);
+    return allocator.dupe(u8, stdout[0..tab]);
 }
 
 /// Extracts (org, repo) from a GitHub URL.

@@ -3,7 +3,6 @@
 const std = @import("std");
 const yarn_v1 = @import("../src/lockfile/yarn_v1.zig");
 const nayr_fmt = @import("../src/lockfile/nayr_format.zig");
-const types = @import("../src/lockfile/types.zig");
 
 test "yarn v1 parse: simple entry" {
     const allocator = std.testing.allocator;

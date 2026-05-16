@@ -73,9 +73,9 @@ pub fn readKey(reader: anytype) !Key {
     const b = try reader.readByte();
     return switch (b) {
         '\r', '\n' => .enter,
-        3 => .ctrl_c,   // Ctrl+C
+        3 => .ctrl_c, // Ctrl+C
         127, 8 => .backspace,
-        27 => blk: {    // ESC sequence
+        27 => blk: { // ESC sequence
             const b2 = reader.readByte() catch return .escape;
             if (b2 != '[') break :blk .escape;
             const b3 = reader.readByte() catch return .escape;
@@ -100,13 +100,13 @@ pub fn readKey(reader: anytype) !Key {
 // ============================================================================
 
 const C = struct {
-    const reset   = "\x1b[0m";
-    const dim     = "\x1b[2m";
-    const bold    = "\x1b[1m";
-    const green   = "\x1b[32m";
-    const cyan    = "\x1b[36m";
-    const yellow  = "\x1b[33m";
-    const red     = "\x1b[31m";
+    const reset = "\x1b[0m";
+    const dim = "\x1b[2m";
+    const bold = "\x1b[1m";
+    const green = "\x1b[32m";
+    const cyan = "\x1b[36m";
+    const yellow = "\x1b[33m";
+    const red = "\x1b[31m";
     const magenta = "\x1b[35m";
 };
 
@@ -230,8 +230,12 @@ pub fn select(
 
         const key = readKey(stdin) catch return .cancelled;
         switch (key) {
-            .up => if (cursor > 0) { cursor -= 1; },
-            .down => if (cursor < items.len - 1) { cursor += 1; },
+            .up => if (cursor > 0) {
+                cursor -= 1;
+            },
+            .down => if (cursor < items.len - 1) {
+                cursor += 1;
+            },
             .enter => {
                 // Replace prompt with completed style.
                 writer.print("\x1b[{d}A\x1b[0J", .{lines_drawn}) catch {};
@@ -263,7 +267,7 @@ pub fn select(
 // ============================================================================
 
 pub const TextResult = union(enum) {
-    value: []u8,   // Caller owns memory
+    value: []u8, // Caller owns memory
     cancelled,
 };
 
@@ -285,7 +289,7 @@ pub fn textInput(
     if (theme.colour) {
         writer.print("{s}◆{s}  {s}{s}{s}\n{s}│{s}  ", .{
             C.green, C.reset, C.bold, prompt, C.reset,
-            C.dim, C.reset,
+            C.dim,   C.reset,
         }) catch {};
         if (placeholder.len > 0) {
             writer.print("{s}{s}{s}", .{ C.dim, placeholder, C.reset }) catch {};
@@ -325,7 +329,7 @@ pub fn textInput(
                     if (placeholder.len > 0) {
                         writer.print("\x1b[{d}C\x1b[{d}D{s}", .{
                             placeholder.len, placeholder.len,
-                            " " ** 64,  // overwrite
+                            " " ** 64, // overwrite
                         }) catch {};
                         writer.print("\x1b[{d}D", .{placeholder.len}) catch {};
                     }
@@ -406,7 +410,7 @@ pub fn confirm(
                 writer.print("\x1b[{d}A\x1b[0J", .{lines_drawn}) catch {};
                 if (theme.colour) {
                     writer.print("{s}◇{s}  {s}{s}{s}  {s}{s}{s}\n", .{
-                        C.dim, C.reset, C.dim, prompt, C.reset,
+                        C.dim,   C.reset,                                   C.dim,   prompt, C.reset,
                         C.green, if (val) @as([]const u8, "Yes") else "No", C.reset,
                     }) catch {};
                 } else {

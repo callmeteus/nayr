@@ -6,3 +6,4 @@ yarn-error*
 
 .zig-cache
 zig-out
+.zlint-bin

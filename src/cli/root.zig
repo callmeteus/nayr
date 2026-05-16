@@ -376,12 +376,12 @@ fn printHelp() void {
     const c = output.hasTtyStderr();
 
     // Colour helpers - fall back to empty strings when colour is off.
-    const bold   = if (c) "\x1b[1m"    else "";
-    const dim    = if (c) "\x1b[2m"    else "";
-    const cyan   = if (c) "\x1b[36m"   else "";
-    const yellow = if (c) "\x1b[33m"   else "";
-    const green  = if (c) "\x1b[32m"   else "";
-    const reset  = if (c) "\x1b[0m"    else "";
+    const bold = if (c) "\x1b[1m" else "";
+    const dim = if (c) "\x1b[2m" else "";
+    const cyan = if (c) "\x1b[36m" else "";
+    const yellow = if (c) "\x1b[33m" else "";
+    const green = if (c) "\x1b[32m" else "";
+    const reset = if (c) "\x1b[0m" else "";
 
     // Header
     w.print(
@@ -399,32 +399,32 @@ fn printHelp() void {
 
     const Cmd = struct { name: []const u8, desc: []const u8 };
     const cmds = [_]Cmd{
-        .{ .name = "install",         .desc = "Install all dependencies" },
-        .{ .name = "add <pkg...>",    .desc = "Add package(s) to package.json" },
+        .{ .name = "install", .desc = "Install all dependencies" },
+        .{ .name = "add <pkg...>", .desc = "Add package(s) to package.json" },
         .{ .name = "remove <pkg...>", .desc = "Remove package(s)" },
-        .{ .name = "upgrade [pkg...]",.desc = "Upgrade package(s)" },
-        .{ .name = "run <script>",    .desc = "Run a package.json script" },
-        .{ .name = "link",            .desc = "Register current package globally" },
-        .{ .name = "link <name>",     .desc = "Use a registered global package locally" },
-        .{ .name = "unlink [name]",   .desc = "Remove a global registration or local link" },
-        .{ .name = "autolink",        .desc = "Auto-link all registered packages" },
-        .{ .name = "audit",           .desc = "Run security audit" },
-        .{ .name = "why <pkg>",       .desc = "Explain why a package is installed" },
-        .{ .name = "licenses list",   .desc = "List all package licenses" },
+        .{ .name = "upgrade [pkg...]", .desc = "Upgrade package(s)" },
+        .{ .name = "run <script>", .desc = "Run a package.json script" },
+        .{ .name = "link", .desc = "Register current package globally" },
+        .{ .name = "link <name>", .desc = "Use a registered global package locally" },
+        .{ .name = "unlink [name]", .desc = "Remove a global registration or local link" },
+        .{ .name = "autolink", .desc = "Auto-link all registered packages" },
+        .{ .name = "audit", .desc = "Run security audit" },
+        .{ .name = "why <pkg>", .desc = "Explain why a package is installed" },
+        .{ .name = "licenses list", .desc = "List all package licenses" },
         .{ .name = "workspace <w> <cmd>", .desc = "Run a command in a specific workspace" },
         .{ .name = "workspaces info", .desc = "List all workspaces" },
-        .{ .name = "registry sync",   .desc = "Sync private registry scopes to .npmrc" },
-        .{ .name = "login",           .desc = "Authenticate against registry/registries" },
-        .{ .name = "logout",          .desc = "Remove stored credentials" },
-        .{ .name = "publish",         .desc = "Publish the current package" },
-        .{ .name = "pack",            .desc = "Create a tarball without publishing" },
-        .{ .name = "cache list",           .desc = "List cached packages" },
-        .{ .name = "cache clean",          .desc = "Remove all cached packages" },
-        .{ .name = "global add <pkg...>",  .desc = "Install packages globally" },
-        .{ .name = "global remove <pkg>",  .desc = "Remove a global package" },
-        .{ .name = "global list",          .desc = "List globally installed packages" },
-        .{ .name = "global bin",           .desc = "Print the global binary directory" },
-        .{ .name = "global upgrade",       .desc = "Upgrade all global packages" },
+        .{ .name = "registry sync", .desc = "Sync private registry scopes to .npmrc" },
+        .{ .name = "login", .desc = "Authenticate against registry/registries" },
+        .{ .name = "logout", .desc = "Remove stored credentials" },
+        .{ .name = "publish", .desc = "Publish the current package" },
+        .{ .name = "pack", .desc = "Create a tarball without publishing" },
+        .{ .name = "cache list", .desc = "List cached packages" },
+        .{ .name = "cache clean", .desc = "Remove all cached packages" },
+        .{ .name = "global add <pkg...>", .desc = "Install packages globally" },
+        .{ .name = "global remove <pkg>", .desc = "Remove a global package" },
+        .{ .name = "global list", .desc = "List globally installed packages" },
+        .{ .name = "global bin", .desc = "Print the global binary directory" },
+        .{ .name = "global upgrade", .desc = "Upgrade all global packages" },
     };
     for (cmds) |cmd| {
         w.print("  {s}{s:<26}{s}{s}{s}{s}\n", .{
@@ -438,13 +438,13 @@ fn printHelp() void {
     const Opt = struct { flag: []const u8, desc: []const u8 };
     const opts_list = [_]Opt{
         .{ .flag = "--format=tui|text|json", .desc = "Output format (default: tui when TTY)" },
-        .{ .flag = "--verbose  / -v",        .desc = "Verbose output" },
-        .{ .flag = "--silent   / -s",        .desc = "Suppress all output except errors" },
-        .{ .flag = "--no-color",             .desc = "Disable ANSI colours" },
-        .{ .flag = "--cwd <path>",           .desc = "Set working directory" },
-        .{ .flag = "--global   / -G",        .desc = "Apply to global packages (add/remove)" },
-        .{ .flag = "--version",              .desc = "Print version and exit" },
-        .{ .flag = "--help     / -h",        .desc = "Print this help" },
+        .{ .flag = "--verbose  / -v", .desc = "Verbose output" },
+        .{ .flag = "--silent   / -s", .desc = "Suppress all output except errors" },
+        .{ .flag = "--no-color", .desc = "Disable ANSI colours" },
+        .{ .flag = "--cwd <path>", .desc = "Set working directory" },
+        .{ .flag = "--global   / -G", .desc = "Apply to global packages (add/remove)" },
+        .{ .flag = "--version", .desc = "Print version and exit" },
+        .{ .flag = "--help     / -h", .desc = "Print this help" },
     };
     for (opts_list) |opt| {
         w.print("  {s}{s:<28}{s}{s}{s}{s}\n", .{

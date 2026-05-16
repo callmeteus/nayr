@@ -4,8 +4,6 @@
 //! `nayr login`, and utilities for reading/writing tokens to `.npmrc`.
 
 const std = @import("std");
-const config_types = @import("../config/types.zig");
-const Config = config_types.Config;
 
 // ============================================================================
 // Login

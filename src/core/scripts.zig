@@ -11,7 +11,6 @@
 //!   3. Root `install` + `postinstall` + `prepare`  ← after deps are ready
 
 const std = @import("std");
-const platform = @import("../util/platform.zig");
 const json_util = @import("../util/json.zig");
 const output = @import("../util/output.zig");
 const hoister = @import("hoister.zig");

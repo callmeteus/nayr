@@ -94,7 +94,7 @@ pub fn fetchAll(
     defer allocator.free(threads);
 
     for (threads) |*t| {
-        t.* = try std.Thread.spawn(.{}, fetchWorker, .{&shared, allocator});
+        t.* = try std.Thread.spawn(.{}, fetchWorker, .{ &shared, allocator });
     }
     for (threads) |t| t.join();
 }
@@ -148,11 +148,15 @@ fn fetchWorker(shared: *const SharedFetchState, parent_alloc: std.mem.Allocator)
                 "tarball checksum does not match lockfile — run nayr install again to re-fetch"
             else
                 @errorName(err);
-            const wmsg = std.fmt.allocPrint(allocator,
+            const wmsg = std.fmt.allocPrint(
+                allocator,
                 "failed to download {s}@{s}: {s}",
                 .{ pkg.name, pkg.version, detail },
             ) catch null;
-            if (wmsg) |m| { defer allocator.free(m); shared.writer.emit(.{ .warning = m }); }
+            if (wmsg) |m| {
+                defer allocator.free(m);
+                shared.writer.emit(.{ .warning = m });
+            }
             _ = shared.done_count.fetchAdd(1, .release);
             continue;
         };
@@ -163,20 +167,26 @@ fn fetchWorker(shared: *const SharedFetchState, parent_alloc: std.mem.Allocator)
             defer std.fs.deleteFileAbsolute(tmp_path) catch {};
             if (f.readToEndAlloc(allocator, 64 * 1024 * 1024)) |data| {
                 shared.cache.store(pkg.registry, pkg.name, pkg.version, data) catch |err| {
-                    const wmsg = std.fmt.allocPrint(allocator,
+                    const wmsg = std.fmt.allocPrint(
+                        allocator,
                         "failed to cache {s}@{s}: {s}",
                         .{ pkg.name, pkg.version, @errorName(err) },
                     ) catch null;
-                    if (wmsg) |m| { defer allocator.free(m); shared.writer.emit(.{ .warning = m }); }
+                    if (wmsg) |m| {
+                        defer allocator.free(m);
+                        shared.writer.emit(.{ .warning = m });
+                    }
                 };
             } else |_| {}
         } else |_| {}
 
         const done = shared.done_count.fetchAdd(1, .release) + 1;
-        shared.writer.emit(.{ .fetch_progress = .{
-            .fetched = done,
-            .total = shared.total,
-            .bytes_per_sec = 0, // TODO: track bandwidth
-        } });
+        shared.writer.emit(.{
+            .fetch_progress = .{
+                .fetched = done,
+                .total = shared.total,
+                .bytes_per_sec = 0, // TODO: track bandwidth
+            },
+        });
     }
 }

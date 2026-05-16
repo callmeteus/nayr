@@ -28,6 +28,8 @@
     "bench": "sh tests/run.sh bench --no-yarn",
     "bench:compare": "sh tests/run.sh bench",
     "ci": "sh tests/run.sh ci",
+    "lint": "sh scripts/lint.sh",
+    "lint:fix": "zig fmt src tests build.zig tests.zig",
     "deploy": "npm login && npm publish --tag latest",
     "deploy:beta": "npm login && npm publish --tag beta"
   }

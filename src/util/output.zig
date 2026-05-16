@@ -12,7 +12,6 @@
 
 const std = @import("std");
 const platform = @import("platform.zig");
-const tui = @import("tui.zig");
 const build_options = @import("build_options");
 
 // ============================================================================
@@ -748,6 +747,7 @@ pub fn hasTtyStderr() bool {
 /// Tries TIOCGWINSZ ioctl first (POSIX), then the COLUMNS env var, then 80.
 fn terminalWidth() usize {
     if (@import("builtin").os.tag != .windows) {
+        // SAFETY: `ioctl(TIOCGWINSZ)` fully initializes `ws` when it returns 0.
         var ws: std.posix.winsize = undefined;
         const rc = std.os.linux.ioctl(std.io.getStdOut().handle, std.os.linux.T.IOCGWINSZ, @intFromPtr(&ws));
         if (rc == 0 and ws.col > 0) return ws.col;

@@ -11,7 +11,7 @@
 #   unit        Run Zig unit tests only
 #   integration Run shell integration tests only
 #   bench       Run performance benchmark
-#   ci          Run everything, fail fast (for CI pipelines)
+#   ci          Run lint, unit tests, and integration (fail fast)
 #
 # Options forwarded to sub-scripts:
 #   --no-yarn       Skip yarn comparison in integration/bench
@@ -53,6 +53,11 @@ run_bench() {
     sh "$SCRIPT_DIR/bench/bench.sh" "$@"
 }
 
+run_lint() {
+    header "Lint (zig fmt --check + zlint)"
+    sh "$NAYR_ROOT/scripts/lint.sh"
+}
+
 case "$CMD" in
     unit)
         run_unit
@@ -70,6 +75,7 @@ case "$CMD" in
         ok "All tests passed."
         ;;
     ci)
+        run_lint
         run_unit
         run_integration --no-yarn "$@"
         ok "CI suite passed."

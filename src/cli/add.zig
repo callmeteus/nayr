@@ -3,7 +3,6 @@
 //! Adds one or more packages to `package.json` and runs install.
 
 const std = @import("std");
-const json_util = @import("../util/json.zig");
 const output = @import("../util/output.zig");
 const config_types = @import("../config/types.zig");
 const install_cmd = @import("install.zig");

@@ -28,7 +28,6 @@ const reg_types = @import("types.zig");
 const Config = config_types.Config;
 const PackageMetadata = reg_types.PackageMetadata;
 const VersionInfo = reg_types.VersionInfo;
-const builtin = @import("builtin");
 
 // ============================================================================
 // Registry error message propagation
@@ -95,7 +94,7 @@ pub fn fetchMetadataBatch(
     items: []const BatchItem,
     config: *const Config,
 ) ![]BatchResult {
-    if (items.len == 0) return try allocator.alloc(BatchResult, 0);
+    if (items.len == 0) return allocator.alloc(BatchResult, 0);
 
     // Create temp file paths.  Use nanosecond timestamp + index for uniqueness.
     const batch_id: u64 = @truncate(@as(u128, @bitCast(std.time.nanoTimestamp())));

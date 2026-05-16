@@ -93,22 +93,19 @@ fn interactiveMenu(allocator: std.mem.Allocator, global_path: []const u8) !void 
         defer cfg.deinit();
 
         // Top-level section picker.
-        var section_items_buf: [6][]const u8 = undefined;
-        var section_items: [][]const u8 = undefined;
-
         var links_label_buf: [64]u8 = undefined;
-        const links_label = std.fmt.bufPrint(&links_label_buf, "Links  ({d} pattern{s})",
-            .{ cfg.auto_link_patterns.len, if (cfg.auto_link_patterns.len == 1) "" else "s" }) catch "Links";
+        const links_label = std.fmt.bufPrint(&links_label_buf, "Links  ({d} pattern{s})", .{ cfg.auto_link_patterns.len, if (cfg.auto_link_patterns.len == 1) "" else "s" }) catch "Links";
 
         var sec_label_buf: [64]u8 = undefined;
         const sec_label = buildSecurityLabel(&sec_label_buf, &cfg);
 
-        section_items_buf[0] = links_label;
-        section_items_buf[1] = sec_label;
-        section_items_buf[2] = "Git  (hash pinning)";
-        section_items_buf[3] = "Registries  (private)";
-        section_items_buf[4] = "← Exit";
-        section_items = section_items_buf[0..5];
+        const section_items = [_][]const u8{
+            links_label,
+            sec_label,
+            "Git  (hash pinning)",
+            "Registries  (private)",
+            "← Exit",
+        };
 
         const result = try prompts.select(w, theme, "What would you like to configure?", section_items, 0);
         switch (result) {
@@ -135,14 +132,22 @@ fn interactiveMenu(allocator: std.mem.Allocator, global_path: []const u8) !void 
 fn buildSecurityLabel(buf: []u8, cfg: *const Config) []const u8 {
     const secs = cfg.minimum_package_age_seconds;
     var age_buf: [16]u8 = undefined;
-    const age: []const u8 = if (secs == 0) "off"
-        else if (secs % 86400 == 0) std.fmt.bufPrint(&age_buf, "{d}d", .{secs / 86400}) catch "?"
-        else if (secs % 3600 == 0)  std.fmt.bufPrint(&age_buf, "{d}h", .{secs / 3600}) catch "?"
-        else std.fmt.bufPrint(&age_buf, "{d}s", .{secs}) catch "?";
+    const age: []const u8 = blk: {
+        if (secs == 0) break :blk "off";
+
+        if (secs % 86400 == 0) {
+            break :blk std.fmt.bufPrint(&age_buf, "{d}d", .{secs / 86400}) catch "?";
+        }
+
+        if (secs % 3600 == 0) {
+            break :blk std.fmt.bufPrint(&age_buf, "{d}h", .{secs / 3600}) catch "?";
+        }
+
+        break :blk std.fmt.bufPrint(&age_buf, "{d}s", .{secs}) catch "?";
+    };
     const n_reg = if (cfg.allowed_registries) |r| r.len else 0;
     const n_git = if (cfg.allowed_git_hosts) |h| h.len else 0;
-    return std.fmt.bufPrint(buf, "Security  (age={s}, reg={d}, git={d})",
-        .{ age, n_reg, n_git }) catch "Security";
+    return std.fmt.bufPrint(buf, "Security  (age={s}, reg={d}, git={d})", .{ age, n_reg, n_git }) catch "Security";
 }
 
 // ============================================================================
@@ -170,25 +175,31 @@ fn menuLinks(
         switch (result) {
             .cancelled => return,
             .selected => |idx| {
-                if (idx == back_idx) return;
+                if (idx == back_idx) {
+                    return;
+                }
                 if (idx == add_idx) {
-                    const res = try prompts.textInput(allocator, w, theme,
-                        "Link pattern (e.g. @myorg/*)", "@");
+                    const res = try prompts.textInput(allocator, w, theme, "Link pattern (e.g. @myorg/*)", "@");
                     switch (res) {
                         .cancelled => continue,
                         .value => |val| {
                             defer allocator.free(val);
                             // Skip if already present.
                             var found = false;
+
                             for (cfg.auto_link_patterns) |p| {
-                                if (std.mem.eql(u8, p, val)) { found = true; break; }
+                                if (std.mem.eql(u8, p, val)) {
+                                    found = true;
+                                    break;
+                                }
                             }
+
                             if (!found) {
                                 try appendToSlice(allocator, &cfg.auto_link_patterns, val);
                                 try writeGlobalNayrrc(allocator, cfg, global_path);
                             }
                             // Reload cfg for next iteration.
-                            return try menuLinks(allocator, cfg, global_path, w, theme);
+                            return menuLinks(allocator, cfg, global_path, w, theme);
                         },
                     }
                 } else {
@@ -196,9 +207,15 @@ fn menuLinks(
                     const removed = cfg.auto_link_patterns[idx];
                     const old = cfg.auto_link_patterns;
                     var new_list = try std.ArrayList([]const u8).initCapacity(allocator, old.len - 1);
+
                     for (old, 0..) |p, i| {
-                        if (i != idx) try new_list.append(p) else allocator.free(p);
+                        if (i != idx) {
+                            try new_list.append(p);
+                        } else {
+                            allocator.free(p);
+                        }
                     }
+
                     allocator.free(old);
                     cfg.auto_link_patterns = try new_list.toOwnedSlice();
                     try writeGlobalNayrrc(allocator, cfg, global_path);
@@ -222,14 +239,13 @@ fn menuSecurity(
             const s = cfg.minimum_package_age_seconds;
             if (s == 0) break :blk "disabled";
             if (s % 86400 == 0) break :blk std.fmt.bufPrint(&age_buf, "{d}d", .{s / 86400}) catch "?";
-            if (s % 3600 == 0)  break :blk std.fmt.bufPrint(&age_buf, "{d}h", .{s / 3600}) catch "?";
-            if (s % 60 == 0)    break :blk std.fmt.bufPrint(&age_buf, "{d}m", .{s / 60}) catch "?";
+            if (s % 3600 == 0) break :blk std.fmt.bufPrint(&age_buf, "{d}h", .{s / 3600}) catch "?";
+            if (s % 60 == 0) break :blk std.fmt.bufPrint(&age_buf, "{d}m", .{s / 60}) catch "?";
             break :blk std.fmt.bufPrint(&age_buf, "{d}s", .{s}) catch "?";
         };
 
         var min_age_label_buf: [48]u8 = undefined;
-        const min_age_label = std.fmt.bufPrint(&min_age_label_buf,
-            "Min package age  (current: {s})", .{age_str}) catch "Min package age";
+        const min_age_label = std.fmt.bufPrint(&min_age_label_buf, "Min package age  (current: {s})", .{age_str}) catch "Min package age";
 
         // allowed-registries items.
         var items = std.ArrayList([]const u8).init(allocator);
@@ -248,6 +264,7 @@ fn menuSecurity(
         } else {
             try items.append("  allowed-registries: (all allowed)");
         }
+
         const reg_add_item = items.items.len;
         try items.append(reg_add_label);
 
@@ -260,6 +277,7 @@ fn menuSecurity(
         } else {
             try items.append("  allowed-git-hosts: (all allowed)");
         }
+
         const git_add_item = items.items.len;
         try items.append(git_add_label);
 
@@ -286,11 +304,12 @@ fn menuSecurity(
         switch (result) {
             .cancelled => return,
             .selected => |idx| {
-                if (idx == back_idx) return;
+                if (idx == back_idx) {
+                    return;
+                }
                 if (idx == 0) {
                     // Edit minimum-package-age.
-                    const res = try prompts.textInput(allocator, w, theme,
-                        "Min package age (0=off, e.g. 24h, 7d, 30m)", age_str);
+                    const res = try prompts.textInput(allocator, w, theme, "Min package age (0=off, e.g. 24h, 7d, 30m)", age_str);
                     switch (res) {
                         .cancelled => continue,
                         .value => |val| {
@@ -299,58 +318,62 @@ fn menuSecurity(
                             try writeGlobalNayrrc(allocator, cfg, global_path);
                         },
                     }
-                } else if (idx == reg_add_item) {
-                    const res = try prompts.textInput(allocator, w, theme,
-                        "Allowed registry pattern (e.g. registry.npmjs.org, npm.arpa*)", "");
-                    switch (res) {
-                        .cancelled => continue,
-                        .value => |val| {
-                            defer allocator.free(val);
-                            if (val.len > 0) {
-                                try appendToAllowedRegistries(allocator, cfg, val);
-                                try writeGlobalNayrrc(allocator, cfg, global_path);
-                            }
-                        },
-                    }
-                } else if (idx == git_add_item) {
-                    const res = try prompts.textInput(allocator, w, theme,
-                        "Allowed git host pattern (e.g. github.com/myorg/*, gitlab.com)", "");
-                    switch (res) {
-                        .cancelled => continue,
-                        .value => |val| {
-                            defer allocator.free(val);
-                            if (val.len > 0) {
-                                try appendToAllowedGitHosts(allocator, cfg, val);
-                                try writeGlobalNayrrc(allocator, cfg, global_path);
-                            }
-                        },
-                    }
                 } else {
-                    // Check if it's a removable registry or git item.
-                    const item_text = items.items[idx];
-                    if (std.mem.startsWith(u8, item_text, "✕  registry: ")) {
-                        const val = item_text["✕  registry: ".len..];
-                        if (cfg.allowed_registries) |regs| {
-                            var new_list = try std.ArrayList([]const u8).initCapacity(allocator, regs.len);
-                            for (regs) |r| {
-                                if (!std.mem.eql(u8, r, val)) try new_list.append(r) else allocator.free(r);
-                            }
-                            allocator.free(regs);
-                            const owned = try new_list.toOwnedSlice();
-                            cfg.allowed_registries = if (owned.len > 0) owned else null;
-                            try writeGlobalNayrrc(allocator, cfg, global_path);
+                    if (idx == reg_add_item) {
+                        const res = try prompts.textInput(allocator, w, theme, "Allowed registry pattern (e.g. registry.npmjs.org, npm.arpa*)", "");
+                        switch (res) {
+                            .cancelled => continue,
+                            .value => |val| {
+                                defer allocator.free(val);
+                                if (val.len > 0) {
+                                    try appendToAllowedRegistries(allocator, cfg, val);
+                                    try writeGlobalNayrrc(allocator, cfg, global_path);
+                                }
+                            },
                         }
-                    } else if (std.mem.startsWith(u8, item_text, "✕  git: ")) {
-                        const val = item_text["✕  git: ".len..];
-                        if (cfg.allowed_git_hosts) |hosts| {
-                            var new_list = try std.ArrayList([]const u8).initCapacity(allocator, hosts.len);
-                            for (hosts) |h| {
-                                if (!std.mem.eql(u8, h, val)) try new_list.append(h) else allocator.free(h);
+                    } else {
+                        if (idx == git_add_item) {
+                            const res = try prompts.textInput(allocator, w, theme, "Allowed git host pattern (e.g. github.com/myorg/*, gitlab.com)", "");
+                            switch (res) {
+                                .cancelled => continue,
+                                .value => |val| {
+                                    defer allocator.free(val);
+                                    if (val.len > 0) {
+                                        try appendToAllowedGitHosts(allocator, cfg, val);
+                                        try writeGlobalNayrrc(allocator, cfg, global_path);
+                                    }
+                                },
                             }
-                            allocator.free(hosts);
-                            const owned = try new_list.toOwnedSlice();
-                            cfg.allowed_git_hosts = if (owned.len > 0) owned else null;
-                            try writeGlobalNayrrc(allocator, cfg, global_path);
+                        } else {
+                            // Check if it's a removable registry or git item.
+                            const item_text = items.items[idx];
+                            if (std.mem.startsWith(u8, item_text, "✕  registry: ")) {
+                                const val = item_text["✕  registry: ".len..];
+                                if (cfg.allowed_registries) |regs| {
+                                    var new_list = try std.ArrayList([]const u8).initCapacity(allocator, regs.len);
+                                    for (regs) |r| {
+                                        if (!std.mem.eql(u8, r, val)) try new_list.append(r) else allocator.free(r);
+                                    }
+                                    allocator.free(regs);
+                                    const owned = try new_list.toOwnedSlice();
+                                    cfg.allowed_registries = if (owned.len > 0) owned else null;
+                                    try writeGlobalNayrrc(allocator, cfg, global_path);
+                                }
+                            } else {
+                                if (std.mem.startsWith(u8, item_text, "✕  git: ")) {
+                                    const val = item_text["✕  git: ".len..];
+                                    if (cfg.allowed_git_hosts) |hosts| {
+                                        var new_list = try std.ArrayList([]const u8).initCapacity(allocator, hosts.len);
+                                        for (hosts) |h| {
+                                            if (!std.mem.eql(u8, h, val)) try new_list.append(h) else allocator.free(h);
+                                        }
+                                        allocator.free(hosts);
+                                        const owned = try new_list.toOwnedSlice();
+                                        cfg.allowed_git_hosts = if (owned.len > 0) owned else null;
+                                        try writeGlobalNayrrc(allocator, cfg, global_path);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -367,8 +390,7 @@ fn menuGit(
     theme: prompts.Theme,
 ) !void {
     var pin_label_buf: [48]u8 = undefined;
-    const pin_label = std.fmt.bufPrint(&pin_label_buf,
-        "pin-hash  (current: {s})", .{if (cfg.git_pin_hash) "on" else "off"}) catch "pin-hash";
+    const pin_label = std.fmt.bufPrint(&pin_label_buf, "pin-hash  (current: {s})", .{if (cfg.git_pin_hash) "on" else "off"}) catch "pin-hash";
 
     var items = std.ArrayList([]const u8).init(allocator);
     defer items.deinit();
@@ -400,7 +422,9 @@ fn menuGit(
     switch (result) {
         .cancelled => return,
         .selected => |idx| {
-            if (idx == back_idx) return;
+            if (idx == back_idx) {
+                return;
+            }
             if (idx == 0) {
                 // Toggle pin-hash.
                 const res = try prompts.confirm(w, theme, "pin-hash", cfg.git_pin_hash);
@@ -411,41 +435,47 @@ fn menuGit(
                         try writeGlobalNayrrc(allocator, cfg, global_path);
                     },
                 }
-            } else if (idx == org_add) {
-                const res = try prompts.textInput(allocator, w, theme, "Org to skip pinning (e.g. myorg)", "");
-                switch (res) {
-                    .cancelled => return,
-                    .value => |val| {
-                        defer allocator.free(val);
-                        if (val.len > 0) {
-                            try appendToSlice(allocator, &cfg.git_no_pin_orgs, val);
-                            try writeGlobalNayrrc(allocator, cfg, global_path);
-                        }
-                    },
-                }
-            } else if (idx == repo_add) {
-                const res = try prompts.textInput(allocator, w, theme, "Repo to skip pinning (e.g. myorg/repo)", "");
-                switch (res) {
-                    .cancelled => return,
-                    .value => |val| {
-                        defer allocator.free(val);
-                        if (val.len > 0) {
-                            try appendToSlice(allocator, &cfg.git_no_pin_repos, val);
-                            try writeGlobalNayrrc(allocator, cfg, global_path);
-                        }
-                    },
-                }
             } else {
-                // Remove an item.
-                const item_text = items.items[idx];
-                if (std.mem.startsWith(u8, item_text, "✕  no-pin-org: ")) {
-                    const val = item_text["✕  no-pin-org: ".len..];
-                    try removeFromSliceByValue(allocator, &cfg.git_no_pin_orgs, val);
-                    try writeGlobalNayrrc(allocator, cfg, global_path);
-                } else if (std.mem.startsWith(u8, item_text, "✕  no-pin-repo: ")) {
-                    const val = item_text["✕  no-pin-repo: ".len..];
-                    try removeFromSliceByValue(allocator, &cfg.git_no_pin_repos, val);
-                    try writeGlobalNayrrc(allocator, cfg, global_path);
+                if (idx == org_add) {
+                    const res = try prompts.textInput(allocator, w, theme, "Org to skip pinning (e.g. myorg)", "");
+                    switch (res) {
+                        .cancelled => return,
+                        .value => |val| {
+                            defer allocator.free(val);
+                            if (val.len > 0) {
+                                try appendToSlice(allocator, &cfg.git_no_pin_orgs, val);
+                                try writeGlobalNayrrc(allocator, cfg, global_path);
+                            }
+                        },
+                    }
+                } else {
+                    if (idx == repo_add) {
+                        const res = try prompts.textInput(allocator, w, theme, "Repo to skip pinning (e.g. myorg/repo)", "");
+                        switch (res) {
+                            .cancelled => return,
+                            .value => |val| {
+                                defer allocator.free(val);
+                                if (val.len > 0) {
+                                    try appendToSlice(allocator, &cfg.git_no_pin_repos, val);
+                                    try writeGlobalNayrrc(allocator, cfg, global_path);
+                                }
+                            },
+                        }
+                    } else {
+                        // Remove an item.
+                        const item_text = items.items[idx];
+                        if (std.mem.startsWith(u8, item_text, "✕  no-pin-org: ")) {
+                            const val = item_text["✕  no-pin-org: ".len..];
+                            try removeFromSliceByValue(allocator, &cfg.git_no_pin_orgs, val);
+                            try writeGlobalNayrrc(allocator, cfg, global_path);
+                        } else {
+                            if (std.mem.startsWith(u8, item_text, "✕  no-pin-repo: ")) {
+                                const val = item_text["✕  no-pin-repo: ".len..];
+                                try removeFromSliceByValue(allocator, &cfg.git_no_pin_repos, val);
+                                try writeGlobalNayrrc(allocator, cfg, global_path);
+                            }
+                        }
+                    }
                 }
             }
         },
@@ -472,7 +502,7 @@ fn menuRegistries(
             const reg = kv.value_ptr.*;
             var buf: [256]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "[{s}]  {s}  ({s})", .{
-                kv.key_ptr.*, reg.url,
+                kv.key_ptr.*,                                                reg.url,
                 if (reg.registry_type == .verdaccio) "verdaccio" else "npm",
             }) catch kv.key_ptr.*;
             theme.note(w, msg);
@@ -493,8 +523,7 @@ fn interactiveLoopFallback(allocator: std.mem.Allocator, global_path: []const u8
     var cfg = try loadGlobalConfig(allocator, global_path);
     defer cfg.deinit();
     printConfig(&cfg, global_path);
-    std.io.getStdOut().writer().print(
-        "\nUse subcommands to edit:\n" ++
+    std.io.getStdOut().writer().print("\nUse subcommands to edit:\n" ++
         "  nayr config set security.minimum-package-age <value>\n" ++
         "  nayr config add links <pattern>\n" ++
         "  nayr config add security.allowed-git-hosts <pattern>\n" ++
@@ -578,10 +607,16 @@ fn cliUnset(allocator: std.mem.Allocator, global_path: []const u8, key: []const 
     var cfg = try loadGlobalConfig(allocator, global_path);
     defer cfg.deinit();
     if (std.mem.eql(u8, key, "security.allowed-registries")) {
-        if (cfg.allowed_registries) |ar| { for (ar) |s| allocator.free(s); allocator.free(ar); }
+        if (cfg.allowed_registries) |ar| {
+            for (ar) |s| allocator.free(s);
+            allocator.free(ar);
+        }
         cfg.allowed_registries = null;
     } else if (std.mem.eql(u8, key, "security.allowed-git-hosts")) {
-        if (cfg.allowed_git_hosts) |ag| { for (ag) |s| allocator.free(s); allocator.free(ag); }
+        if (cfg.allowed_git_hosts) |ag| {
+            for (ag) |s| allocator.free(s);
+            allocator.free(ag);
+        }
         cfg.allowed_git_hosts = null;
     } else if (std.mem.eql(u8, key, "security.minimum-package-age")) {
         cfg.minimum_package_age_seconds = 86400;
@@ -599,17 +634,21 @@ fn printConfig(cfg: *const Config, global_path: []const u8) void {
     for (cfg.auto_link_patterns) |p| w.print("{s} = true\n", .{p}) catch {};
     w.print("\n[security]\n", .{}) catch {};
     const secs = cfg.minimum_package_age_seconds;
-    if (secs % 86400 == 0) w.print("minimum-package-age = \"{d}d\"\n", .{secs / 86400}) catch {}
-    else if (secs % 3600 == 0) w.print("minimum-package-age = \"{d}h\"\n", .{secs / 3600}) catch {}
-    else w.print("minimum-package-age = \"{d}\"\n", .{secs}) catch {};
+    if (secs % 86400 == 0) w.print("minimum-package-age = \"{d}d\"\n", .{secs / 86400}) catch {} else if (secs % 3600 == 0) w.print("minimum-package-age = \"{d}h\"\n", .{secs / 3600}) catch {} else w.print("minimum-package-age = \"{d}\"\n", .{secs}) catch {};
     if (cfg.allowed_registries) |regs| {
         w.print("allowed-registries = [", .{}) catch {};
-        for (regs, 0..) |r, i| { if (i > 0) w.print(", ", .{}) catch {}; w.print("\"{s}\"", .{r}) catch {}; }
+        for (regs, 0..) |r, i| {
+            if (i > 0) w.print(", ", .{}) catch {};
+            w.print("\"{s}\"", .{r}) catch {};
+        }
         w.print("]\n", .{}) catch {};
     }
     if (cfg.allowed_git_hosts) |hosts| {
         w.print("allowed-git-hosts = [", .{}) catch {};
-        for (hosts, 0..) |h, i| { if (i > 0) w.print(", ", .{}) catch {}; w.print("\"{s}\"", .{h}) catch {}; }
+        for (hosts, 0..) |h, i| {
+            if (i > 0) w.print(", ", .{}) catch {};
+            w.print("\"{s}\"", .{h}) catch {};
+        }
         w.print("]\n", .{}) catch {};
     }
     w.print("\n[git]\npin-hash = {s}\n", .{if (cfg.git_pin_hash) "true" else "false"}) catch {};
@@ -632,19 +671,21 @@ fn writeGlobalNayrrc(allocator: std.mem.Allocator, cfg: *const Config, path: []c
 
     try w.print("[security]\n", .{});
     const secs = cfg.minimum_package_age_seconds;
-    if (secs == 0) try w.print("minimum-package-age = \"0\"\n", .{})
-    else if (secs % 86400 == 0) try w.print("minimum-package-age = \"{d}d\"\n", .{secs / 86400})
-    else if (secs % 3600 == 0) try w.print("minimum-package-age = \"{d}h\"\n", .{secs / 3600})
-    else if (secs % 60 == 0) try w.print("minimum-package-age = \"{d}m\"\n", .{secs / 60})
-    else try w.print("minimum-package-age = \"{d}\"\n", .{secs});
+    if (secs == 0) try w.print("minimum-package-age = \"0\"\n", .{}) else if (secs % 86400 == 0) try w.print("minimum-package-age = \"{d}d\"\n", .{secs / 86400}) else if (secs % 3600 == 0) try w.print("minimum-package-age = \"{d}h\"\n", .{secs / 3600}) else if (secs % 60 == 0) try w.print("minimum-package-age = \"{d}m\"\n", .{secs / 60}) else try w.print("minimum-package-age = \"{d}\"\n", .{secs});
     if (cfg.allowed_registries) |regs| {
         try w.print("allowed-registries = [", .{});
-        for (regs, 0..) |r, i| { if (i > 0) try w.print(", ", .{}); try w.print("\"{s}\"", .{r}); }
+        for (regs, 0..) |r, i| {
+            if (i > 0) try w.print(", ", .{});
+            try w.print("\"{s}\"", .{r});
+        }
         try w.print("]\n", .{});
     }
     if (cfg.allowed_git_hosts) |hosts| {
         try w.print("allowed-git-hosts = [", .{});
-        for (hosts, 0..) |h, i| { if (i > 0) try w.print(", ", .{}); try w.print("\"{s}\"", .{h}); }
+        for (hosts, 0..) |h, i| {
+            if (i > 0) try w.print(", ", .{});
+            try w.print("\"{s}\"", .{h});
+        }
         try w.print("]\n", .{});
     }
     try w.print("\n", .{});
@@ -653,12 +694,18 @@ fn writeGlobalNayrrc(allocator: std.mem.Allocator, cfg: *const Config, path: []c
         try w.print("[git]\npin-hash = {s}\n", .{if (cfg.git_pin_hash) "true" else "false"});
         if (cfg.git_no_pin_orgs.len > 0) {
             try w.print("no-pin-orgs = [", .{});
-            for (cfg.git_no_pin_orgs, 0..) |o, i| { if (i > 0) try w.print(", ", .{}); try w.print("\"{s}\"", .{o}); }
+            for (cfg.git_no_pin_orgs, 0..) |o, i| {
+                if (i > 0) try w.print(", ", .{});
+                try w.print("\"{s}\"", .{o});
+            }
             try w.print("]\n", .{});
         }
         if (cfg.git_no_pin_repos.len > 0) {
             try w.print("no-pin-repos = [", .{});
-            for (cfg.git_no_pin_repos, 0..) |r, i| { if (i > 0) try w.print(", ", .{}); try w.print("\"{s}\"", .{r}); }
+            for (cfg.git_no_pin_repos, 0..) |r, i| {
+                if (i > 0) try w.print(", ", .{});
+                try w.print("\"{s}\"", .{r});
+            }
             try w.print("]\n", .{});
         }
         try w.print("\n", .{});
@@ -681,7 +728,10 @@ fn appendExistingRegistrySections(allocator: std.mem.Allocator, path: []const u8
     while (lines.next()) |line| {
         const t = std.mem.trim(u8, line, " \t\r");
         if (t.len > 0 and t[0] == '[') in_registry = std.mem.startsWith(u8, t[1..], "registry.");
-        if (in_registry) { try out.appendSlice(line); try out.append('\n'); }
+        if (in_registry) {
+            try out.appendSlice(line);
+            try out.append('\n');
+        }
     }
 }
 

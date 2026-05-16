@@ -56,6 +56,7 @@ pub fn mkdirAllRecursive(allocator: std.mem.Allocator, path: []const u8) !void {
 /// ## Returns
 /// Caller owns the returned slice.
 pub fn tempPath(allocator: std.mem.Allocator, tmp_dir: []const u8) ![]const u8 {
+    // SAFETY: `rng` is fully initialized by `random.bytes` before any use.
     var rng: u64 = undefined;
     std.crypto.random.bytes(std.mem.asBytes(&rng));
     const pid = std.os.linux.getpid();
@@ -64,6 +65,7 @@ pub fn tempPath(allocator: std.mem.Allocator, tmp_dir: []const u8) ![]const u8 {
 
 /// Generates a unique temporary directory path inside `tmp_dir`.
 pub fn tempDirPath(allocator: std.mem.Allocator, tmp_dir: []const u8) ![]const u8 {
+    // SAFETY: `rng` is fully initialized by `random.bytes` before any use.
     var rng: u64 = undefined;
     std.crypto.random.bytes(std.mem.asBytes(&rng));
     const pid = std.os.linux.getpid();
@@ -81,16 +83,20 @@ pub fn cleanStaleTempFiles(allocator: std.mem.Allocator, tmp_dir: []const u8, ma
     var dir = std.fs.openDirAbsolute(tmp_dir, .{ .iterate = true }) catch return;
     defer dir.close();
 
-    const now = @as(u64, @intCast(std.time.timestamp()));
+    const now: u64 = @intCast(std.time.timestamp());
     var iter = dir.iterate();
     while (try iter.next()) |entry| {
         const full = try std.fs.path.join(allocator, &.{ tmp_dir, entry.name });
         defer allocator.free(full);
 
         const f = std.fs.openFileAbsolute(full, .{}) catch continue;
-        const stat = f.stat() catch { f.close(); continue; };
+        const stat = f.stat() catch {
+            f.close();
+            continue;
+        };
         f.close();
-        const age = now -| @as(u64, @intCast(@divTrunc(stat.mtime, std.time.ns_per_s)));
+        const mtime_sec: u64 = @intCast(@divTrunc(stat.mtime, std.time.ns_per_s));
+        const age = now -| mtime_sec;
         if (age > max_age_secs) {
             std.fs.deleteTreeAbsolute(full) catch {};
         }

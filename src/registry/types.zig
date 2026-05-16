@@ -88,7 +88,6 @@ fn freeStrMap(allocator: std.mem.Allocator, map: *std.StringHashMapUnmanaged([]c
     map.deinit(allocator);
 }
 
-
 // ============================================================================
 // AuditAdvisory
 // ============================================================================

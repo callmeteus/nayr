@@ -5,6 +5,7 @@
 //!   zig build                        - debug binary
 //!   zig build -Doptimize=ReleaseFast - optimized binary
 //!   zig build test                   - run all tests
+//!   zig build lint                   - zig fmt --check + zlint (needs zlint)
 //!   zig build cross                  - cross-compile for all targets
 
 const std = @import("std");
@@ -56,6 +57,14 @@ pub fn build(b: *std.Build) void {
     });
     unit_tests.root_module.addOptions("build_options", options);
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
+
+    // -------------------------------------------------------------------------
+    // Lint: `zig build lint` (delegates to scripts/lint.sh)
+    // -------------------------------------------------------------------------
+    const lint_step = b.step("lint", "Run zig fmt --check and zlint");
+    const lint_cmd = b.addSystemCommand(&.{ "sh", "scripts/lint.sh" });
+    lint_cmd.setCwd(b.path("."));
+    lint_step.dependOn(&lint_cmd.step);
 
     // -------------------------------------------------------------------------
     // Cross-compilation targets: `zig build cross`

@@ -11,7 +11,6 @@
 const std = @import("std");
 const types = @import("types.zig");
 const Config = types.Config;
-const AuthEntry = types.AuthEntry;
 
 // ============================================================================
 // Public API
