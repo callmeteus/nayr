@@ -4,6 +4,7 @@
 //! `nayr login`, and utilities for reading/writing tokens to `.npmrc`.
 
 const std = @import("std");
+const platform = @import("../util/platform.zig");
 
 // ============================================================================
 // Login
@@ -148,8 +149,7 @@ pub fn saveToken(
     }
 
     // Atomic write via temp file + rename.
-    const pid = std.os.linux.getpid();
-    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp.{d}", .{ npmrc_path, pid });
+    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp.{x}", .{ npmrc_path, platform.uniqueId() });
     defer allocator.free(tmp_path);
 
     {
@@ -187,8 +187,7 @@ pub fn removeToken(
         try out.append('\n');
     }
 
-    const pid = std.os.linux.getpid();
-    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp.{d}", .{ npmrc_path, pid });
+    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp.{x}", .{ npmrc_path, platform.uniqueId() });
     defer allocator.free(tmp_path);
 
     {

@@ -5,6 +5,7 @@
 //! safe directory creation.
 
 const std = @import("std");
+const platform = @import("platform.zig");
 
 // ============================================================================
 // Safe directory creation
@@ -56,20 +57,12 @@ pub fn mkdirAllRecursive(allocator: std.mem.Allocator, path: []const u8) !void {
 /// ## Returns
 /// Caller owns the returned slice.
 pub fn tempPath(allocator: std.mem.Allocator, tmp_dir: []const u8) ![]const u8 {
-    // SAFETY: `rng` is fully initialized by `random.bytes` before any use.
-    var rng: u64 = undefined;
-    std.crypto.random.bytes(std.mem.asBytes(&rng));
-    const pid = std.os.linux.getpid();
-    return std.fmt.allocPrint(allocator, "{s}/nayr-{d}-{x}.tmp", .{ tmp_dir, pid, rng });
+    return std.fmt.allocPrint(allocator, "{s}{c}nayr-{x}.tmp", .{ tmp_dir, std.fs.path.sep, platform.uniqueId() });
 }
 
 /// Generates a unique temporary directory path inside `tmp_dir`.
 pub fn tempDirPath(allocator: std.mem.Allocator, tmp_dir: []const u8) ![]const u8 {
-    // SAFETY: `rng` is fully initialized by `random.bytes` before any use.
-    var rng: u64 = undefined;
-    std.crypto.random.bytes(std.mem.asBytes(&rng));
-    const pid = std.os.linux.getpid();
-    return std.fmt.allocPrint(allocator, "{s}/nayr-{d}-{x}.tmpdir", .{ tmp_dir, pid, rng });
+    return std.fmt.allocPrint(allocator, "{s}{c}nayr-{x}.tmpdir", .{ tmp_dir, std.fs.path.sep, platform.uniqueId() });
 }
 
 /// Removes all entries in `tmp_dir` whose modification time is older than

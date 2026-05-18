@@ -18,6 +18,7 @@ const resolver_mod = @import("resolver.zig");
 const registry_client = @import("../registry/client.zig");
 const config_types = @import("../config/types.zig");
 const output = @import("../util/output.zig");
+const platform = @import("../util/platform.zig");
 const ResolvedPackage = resolver_mod.ResolvedPackage;
 const Cache = cache_mod.Cache;
 const Config = config_types.Config;
@@ -78,6 +79,9 @@ pub fn fetchAll(
     var done_count = std.atomic.Value(u32).init(0);
     const total: u32 = @intCast(pending.items.len);
 
+    const tmp_dir = try platform.getTempDir(allocator);
+    defer allocator.free(tmp_dir);
+
     // Share the pending slice, cache, and config between threads (read-only).
     const shared = SharedFetchState{
         .pending = pending.items,
@@ -87,6 +91,7 @@ pub fn fetchAll(
         .done_count = &done_count,
         .total = total,
         .writer = writer,
+        .tmp_dir = tmp_dir,
     };
 
     const n_threads = @min(opts.concurrency, total);
@@ -111,6 +116,7 @@ const SharedFetchState = struct {
     done_count: *std.atomic.Value(u32),
     total: u32,
     writer: output.Writer,
+    tmp_dir: []const u8,
 };
 
 /// Worker function executed by each fetch thread.
@@ -149,7 +155,7 @@ fn fetchWorker(shared: *const SharedFetchState, parent_alloc: std.mem.Allocator)
 
         // Use a per-package temp path to avoid race conditions between threads
         // all writing to the same fixed temp file.
-        const tmp_path = std.fmt.allocPrint(allocator, "/tmp/nayr-dl-{d}.tmp", .{idx}) catch {
+        const tmp_path = std.fmt.allocPrint(allocator, "{s}{c}nayr-dl-{d}-{x}.tmp", .{ shared.tmp_dir, std.fs.path.sep, idx, platform.uniqueId() }) catch {
             shared.writer.emit(.{ .warning = "OutOfMemory" });
             _ = shared.done_count.fetchAdd(1, .release);
             continue;

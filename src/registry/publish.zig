@@ -6,6 +6,7 @@
 const std = @import("std");
 const config_types = @import("../config/types.zig");
 const json_util = @import("../util/json.zig");
+const platform = @import("../util/platform.zig");
 const Config = config_types.Config;
 
 // ============================================================================
@@ -191,7 +192,9 @@ pub fn publish(
 ///
 /// Returns the path to the created tarball. Caller must delete after use.
 fn createTarball(allocator: std.mem.Allocator, pkg_dir: []const u8, _: []const u8) ![]const u8 {
-    const out_path = try std.fmt.allocPrint(allocator, "/tmp/nayr-pack-{d}.tgz", .{std.time.milliTimestamp()});
+    const tmp_dir = try platform.getTempDir(allocator);
+    defer allocator.free(tmp_dir);
+    const out_path = try std.fmt.allocPrint(allocator, "{s}{c}nayr-pack-{x}.tgz", .{ tmp_dir, std.fs.path.sep, platform.uniqueId() });
 
     // Use the system `tar` command for simplicity. A full implementation
     // would use std.tar directly for reproducible, sorted archives.

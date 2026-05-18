@@ -63,6 +63,29 @@ pub fn getConfigDir(allocator: std.mem.Allocator) ![]const u8 {
     return std.fs.path.join(allocator, &.{ home, ".nayr" });
 }
 
+/// Returns the OS temporary directory.
+///
+/// Linux/macOS: `$TMPDIR` or `/tmp`
+/// Windows:     `%TEMP%` or `%TMP%` or `C:\Windows\Temp`
+pub fn getTempDir(allocator: std.mem.Allocator) ![]const u8 {
+    if (builtin.os.tag == .windows) {
+        if (std.process.getEnvVarOwned(allocator, "TEMP")) |t| return t else |_| {}
+        if (std.process.getEnvVarOwned(allocator, "TMP")) |t| return t else |_| {}
+        return allocator.dupe(u8, "C:\\Windows\\Temp");
+    }
+    if (std.process.getEnvVarOwned(allocator, "TMPDIR")) |t| return t else |_| {}
+    return allocator.dupe(u8, "/tmp");
+}
+
+/// Returns a cryptographically random u64 suitable as a unique suffix in
+/// temp file names. Preferred over `getpid()` because it works on all
+/// platforms and provides stronger uniqueness guarantees (2^64 space).
+pub fn uniqueId() u64 {
+    var id: u64 = undefined;
+    std.crypto.random.bytes(std.mem.asBytes(&id));
+    return id;
+}
+
 /// Returns the global nayr package installation directory.
 ///
 /// This is the "home" of globally installed packages - equivalent to

@@ -279,8 +279,7 @@ fn writeScopesToNpmrc(
     const new_content = try std.fmt.allocPrint(allocator, "{s}{s}", .{ stripped, block.items });
     defer allocator.free(new_content);
 
-    const pid = std.os.linux.getpid();
-    const tmp = try std.fmt.allocPrint(allocator, "{s}.tmp.{d}", .{ npmrc_path, pid });
+    const tmp = try std.fmt.allocPrint(allocator, "{s}.tmp.{x}", .{ npmrc_path, platform.uniqueId() });
     defer allocator.free(tmp);
     {
         const f = try std.fs.createFileAbsolute(tmp, .{ .truncate = true });

@@ -26,6 +26,7 @@ const std = @import("std");
 const config_types = @import("../config/types.zig");
 const reg_types = @import("types.zig");
 const IoTrace = @import("../util/io_trace.zig").IoTrace;
+const platform = @import("../util/platform.zig");
 const Config = config_types.Config;
 const PackageMetadata = reg_types.PackageMetadata;
 const VersionInfo = reg_types.VersionInfo;
@@ -107,8 +108,11 @@ pub fn fetchMetadataBatch(
 ) ![]BatchResult {
     if (items.len == 0) return allocator.alloc(BatchResult, 0);
 
-    // Create temp file paths.  Use nanosecond timestamp + index for uniqueness.
-    const batch_id: u64 = @truncate(@as(u128, @bitCast(std.time.nanoTimestamp())));
+    const tmp_dir = try platform.getTempDir(allocator);
+    defer allocator.free(tmp_dir);
+
+    // Create temp file paths.  Use random batch ID + index for uniqueness.
+    const batch_id: u64 = platform.uniqueId();
 
     const temp_paths = try allocator.alloc([]const u8, items.len);
     defer allocator.free(temp_paths);
@@ -122,8 +126,8 @@ pub fn fetchMetadataBatch(
     for (0..items.len) |i| {
         temp_paths[i] = try std.fmt.allocPrint(
             allocator,
-            "/tmp/nayr-{x}-{d}.json",
-            .{ batch_id, i },
+            "{s}{c}nayr-{x}-{d}.json",
+            .{ tmp_dir, std.fs.path.sep, batch_id, i },
         );
         created = i + 1;
     }

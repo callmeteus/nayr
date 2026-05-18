@@ -325,8 +325,10 @@ fn installGitPackage(
     const clone_dest = if (parts.subdir != null) blk: {
         // Use a unique temp path derived from dest to avoid conflicts between
         // concurrent installs of different packages.
-        break :blk try std.fmt.allocPrint(allocator, "/tmp/nayr-git-{x}", .{
-            std.hash.Wyhash.hash(0, dest),
+        const tmp_dir = try platform.getTempDir(allocator);
+        defer allocator.free(tmp_dir);
+        break :blk try std.fmt.allocPrint(allocator, "{s}{c}nayr-git-{x}", .{
+            tmp_dir, std.fs.path.sep, std.hash.Wyhash.hash(0, dest),
         });
     } else dest;
     defer if (parts.subdir != null) allocator.free(clone_dest);
