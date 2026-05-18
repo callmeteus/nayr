@@ -164,7 +164,7 @@ fn fetchWorker(shared: *const SharedFetchState, parent_alloc: std.mem.Allocator)
 
         client.downloadTarball(pkg.tarball_url, tmp_path, pkg.integrity) catch |err| {
             const detail: []const u8 = if (err == error.IntegrityMismatch)
-                "tarball checksum does not match lockfile — run nayr install again to re-fetch"
+                "tarball checksum does not match lockfile - run nayr install again to re-fetch"
             else
                 @errorName(err);
             const wmsg = std.fmt.allocPrint(

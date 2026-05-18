@@ -123,7 +123,7 @@ fn runInWorkspace(
             return;
         }
 
-        // `nayr workspace <name> <script>` — yarn compatibility: if the first
+        // `nayr workspace <name> <script>` - yarn compatibility: if the first
         // argument matches a script in the workspace manifest, run it directly
         // without requiring the explicit `run` prefix.  This allows
         //   yarn workspace @typr/js build

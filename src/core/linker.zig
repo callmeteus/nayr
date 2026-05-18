@@ -108,7 +108,7 @@ pub fn link(
                 // The next `nayr install` will re-fetch the missing package.
                 const wmsg = std.fmt.allocPrint(
                     allocator,
-                    "cache miss for {s}@{s} ({s}) — will re-fetch on next install",
+                    "cache miss for {s}@{s} ({s}) - will re-fetch on next install",
                     .{ hp.name, hp.version, @errorName(err) },
                 ) catch null;
                 if (wmsg) |m| {

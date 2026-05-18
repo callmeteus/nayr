@@ -230,7 +230,7 @@ pub const Config = struct {
     /// checks (minimum-package-age, allowed-registries, allowed-git-hosts).
     ///
     /// A package is exempt when its name matches any pattern in
-    /// `auto_link_patterns` — those are the developer's own workspace packages
+    /// `auto_link_patterns` - those are the developer's own workspace packages
     /// (e.g. `@lemon/*`, `@luckymaker/*`) that are explicitly trusted.
     ///
     /// The root package of the current install is also always exempt; callers

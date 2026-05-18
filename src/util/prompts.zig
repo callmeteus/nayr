@@ -22,7 +22,7 @@ const builtin = @import("builtin");
 
 const is_posix = builtin.os.tag != .windows;
 
-/// Saved terminal state — returned by `enterRawMode`, passed to `leaveRawMode`.
+/// Saved terminal state - returned by `enterRawMode`, passed to `leaveRawMode`.
 /// On Windows this is a zero-size no-op struct.
 pub const RawMode = if (is_posix) struct {
     orig: std.posix.termios,
@@ -164,7 +164,7 @@ pub const Theme = struct {
 };
 
 // ============================================================================
-// select() — arrow-key option picker
+// select() - arrow-key option picker
 // ============================================================================
 
 pub const SelectResult = union(enum) {
@@ -263,7 +263,7 @@ pub fn select(
 }
 
 // ============================================================================
-// textInput() — single-line text entry
+// textInput() - single-line text entry
 // ============================================================================
 
 pub const TextResult = union(enum) {
@@ -363,7 +363,7 @@ pub fn textInput(
 }
 
 // ============================================================================
-// confirm() — yes/no toggle
+// confirm() - yes/no toggle
 // ============================================================================
 
 pub const ConfirmResult = union(enum) {

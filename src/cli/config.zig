@@ -1,4 +1,4 @@
-//! `nayr config` — Interactive global configuration editor
+//! `nayr config` - Interactive global configuration editor
 //!
 //! Reads and writes `~/.nayrrc` using a clack-style interactive TUI.
 //!

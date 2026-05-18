@@ -645,7 +645,7 @@ fn parseMetadata(allocator: std.mem.Allocator, body: []const u8) !PackageMetadat
     const root = parsed.value;
     if (root != .object) return error.InvalidMetadata;
 
-    // npm error responses look like {"error":"Not found"} — propagate the
+    // npm error responses look like {"error":"Not found"} - propagate the
     // message via the RegistryErrorMsg sentinel so the resolver can surface
     // it through the proper output channel (which clears the progress bar).
     if (root.object.get("error")) |err_val| {

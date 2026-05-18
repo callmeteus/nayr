@@ -324,7 +324,7 @@ const TuiWriter = struct {
         // Keep a copy so the background spinner thread can redraw without
         // needing the original (stack-allocated) strings.
         // Guard against aliasing: when called from redrawSpinnerOnly the
-        // source slices point into these same fields — skip the copy then.
+        // source slices point into these same fields - skip the copy then.
         const ll = @min(label.len, self.cur_label.len);
         if (@intFromPtr(label.ptr) != @intFromPtr(&self.cur_label[0])) {
             @memcpy(self.cur_label[0..ll], label[0..ll]);

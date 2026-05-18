@@ -218,7 +218,7 @@ pub fn resolve(
     }
 
     // Collect names of all workspace packages (root + sub-workspaces).
-    // These are always exempt from security checks — they're the developer's
+    // These are always exempt from security checks - they're the developer's
     // own code, never downloaded from a registry or external git host.
     var workspace_names = std.StringHashMapUnmanaged(void){};
     defer workspace_names.deinit(allocator);
