@@ -73,14 +73,6 @@ pub fn fetchAll(
 
     if (pending.items.len == 0) return;
 
-    {
-        const dbg = std.io.getStdErr().writer();
-        dbg.print("[debug] fetcher: {d} cache hits, {d} to download\n", .{
-            packages.count() - pending.items.len,
-            pending.items.len,
-        }) catch {};
-    }
-
     // Atomic counter: threads use CAS to grab the next work item.
     var next_idx = std.atomic.Value(u32).init(0);
     var done_count = std.atomic.Value(u32).init(0);
@@ -154,13 +146,6 @@ fn fetchWorker(shared: *const SharedFetchState, parent_alloc: std.mem.Allocator)
         const allocator = arena.allocator();
 
         const pkg = shared.pending[idx];
-
-        {
-            const dbg = std.io.getStdErr().writer();
-            dbg.print("[debug] fetch [{d}/{d}] start: {s}@{s}\n", .{
-                idx + 1, shared.pending.len, pkg.name, pkg.version,
-            }) catch {};
-        }
 
         // Use a per-package temp path to avoid race conditions between threads
         // all writing to the same fixed temp file.

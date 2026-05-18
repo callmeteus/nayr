@@ -255,6 +255,23 @@ pub fn hoist(
             }
             const dep_pkg = best orelse continue;
 
+            // Cycle detection: if dep_name already appears anywhere in the
+            // current install_path ancestor chain, Node.js module resolution
+            // will already find it by walking up - no further nesting needed.
+            // Without this check, cyclic transitive deps create an infinite BFS.
+            const cycle_prefix = try std.fmt.allocPrint(allocator, "node_modules/{s}/", .{dep_name});
+            defer allocator.free(cycle_prefix);
+            const cycle_infix = try std.fmt.allocPrint(allocator, "/node_modules/{s}/", .{dep_name});
+            defer allocator.free(cycle_infix);
+            const cycle_suffix = try std.fmt.allocPrint(allocator, "/node_modules/{s}", .{dep_name});
+            defer allocator.free(cycle_suffix);
+            if (std.mem.startsWith(u8, hp.install_path, cycle_prefix) or
+                std.mem.indexOf(u8, hp.install_path, cycle_infix) != null or
+                std.mem.endsWith(u8, hp.install_path, cycle_suffix))
+            {
+                continue; // Cycle detected - ancestor already provides this package
+            }
+
             // Install nested under this package's directory.
             const nested_path = try std.fmt.allocPrint(
                 allocator,
