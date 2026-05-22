@@ -388,7 +388,12 @@ pub fn resolve(
                     // specifier (git URL, registry, etc.) so a portable entry is
                     // written on the next lockfile flush.
                     const resolved_is_local = entry.resolved.len > 0 and entry.resolved[0] == '/';
-                    if (semver.satisfies(allocator, entry.version, effective_range) and !resolved_is_local) {
+                    // A lockfile entry with no resolved URL (e.g. a Yarn Classic stub for a
+                // platform-specific optional dep that wasn't installed on the machine that
+                // generated the lockfile) must fall through to fresh registry resolution so
+                // nayr can fetch the actual tarball URL.
+                const resolved_is_stub = !isGitDep(entry.resolved) and entry.resolved.len == 0;
+                if (semver.satisfies(allocator, entry.version, effective_range) and !resolved_is_local and !resolved_is_stub) {
                         const map_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ req.name, entry.version });
 
                         // Record range → resolved key for lockfile pattern generation.
