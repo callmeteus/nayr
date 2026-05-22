@@ -209,10 +209,10 @@ const TuiWriter = struct {
     colour: bool,
     /// Current spinner frame (advances on each progress event).
     spinner_frame: u8 = 0,
-    /// Number of progress bar lines currently drawn on the terminal (0–2).
+    /// Number of progress bar lines currently drawn on the terminal (0-2).
     /// Used to move the cursor back up before re-rendering.
     progress_lines: u2 = 0,
-    /// Which install phase is active (0 = none, 1–4 = resolve/fetch/link/scripts).
+    /// Which install phase is active (0 = none, 1-4 = resolve/fetch/link/scripts).
     current_phase: u8 = 0,
     /// Items done in the current phase (used to compute the overall bar).
     phase_done: u32 = 0,

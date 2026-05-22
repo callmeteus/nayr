@@ -126,9 +126,9 @@ pub const Config = struct {
     /// Registry URL allow-list.  Each entry is a glob pattern matched against
     /// the registry URL (scheme-stripped for convenience):
     ///
-    ///   `"registry.npmjs.org"`        – exact host
-    ///   `"*.npmjs.org"`               – any npmjs.org subdomain
-    ///   `"npm.arpa*"`                 – private registry prefix
+    ///   `"registry.npmjs.org"`        - exact host
+    ///   `"*.npmjs.org"`               - any npmjs.org subdomain
+    ///   `"npm.arpa*"`                 - private registry prefix
     ///
     /// `null` (the default) means ALL registries are permitted.
     allowed_registries: ?[]const []const u8 = null,
@@ -136,9 +136,9 @@ pub const Config = struct {
     /// Git host / URL allow-list.  Each entry is a glob pattern matched against
     /// the scheme-stripped git URL, e.g.:
     ///
-    ///   `"github.com"`                – any repo on GitHub
-    ///   `"github.com/even7hq/*"`   – only repos in one org
-    ///   `"gitlab.com"`                – any repo on GitLab
+    ///   `"github.com"`                - any repo on GitHub
+    ///   `"github.com/even7hq/*"`   - only repos in one org
+    ///   `"gitlab.com"`                - any repo on GitLab
     ///
     /// `null` (the default) means ALL git sources are permitted.
     allowed_git_hosts: ?[]const []const u8 = null,
