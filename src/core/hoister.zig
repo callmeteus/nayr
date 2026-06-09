@@ -231,72 +231,98 @@ pub fn hoist(
         const hp = work_queue.items[qi4];
         qi4 += 1;
 
-        var dep_it = hp.pkg.dependencies.iterator();
-        while (dep_it.next()) |dep| {
-            const dep_name = dep.key_ptr.*;
-            const dep_range = dep.value_ptr.*;
-
-            // Determine what version Node.js will find for this dep when
-            // walking up from hp's install_path. We approximate this as the
-            // root version (the most common case and always the worst-case).
-            const root_dep_ver = root_versions.get(dep_name) orelse continue;
-
-            // If root version satisfies the required range, no nesting needed.
-            if (semver.satisfies(allocator, root_dep_ver, dep_range)) continue;
-
-            // Root version doesn't satisfy; find the best matching candidate.
-            const candidates = name_to_pkgs.get(dep_name) orelse continue;
-            var best: ?*const ResolvedPackage = null;
-            for (candidates.items) |candidate| {
-                if (!semver.satisfies(allocator, candidate.version, dep_range)) continue;
-                if (best == null or semver.compareVersions(candidate.version, best.?.version) == .gt) {
-                    best = candidate;
-                }
+        const dep_maps = [_]*const std.StringHashMapUnmanaged([]const u8){
+            &hp.pkg.dependencies,
+            &hp.pkg.optional_dependencies,
+        };
+        for (dep_maps) |dep_map| {
+            var dep_it = dep_map.iterator();
+            while (dep_it.next()) |dep| {
+                try nestDependencyIfNeeded(
+                    allocator,
+                    dep.key_ptr.*,
+                    dep.value_ptr.*,
+                    &hp,
+                    &root_versions,
+                    &name_to_pkgs,
+                    &added_paths,
+                    &result,
+                    &work_queue,
+                );
             }
-            const dep_pkg = best orelse continue;
-
-            // Cycle detection: if dep_name already appears anywhere in the
-            // current install_path ancestor chain, Node.js module resolution
-            // will already find it by walking up - no further nesting needed.
-            // Without this check, cyclic transitive deps create an infinite BFS.
-            const cycle_prefix = try std.fmt.allocPrint(allocator, "node_modules/{s}/", .{dep_name});
-            defer allocator.free(cycle_prefix);
-            const cycle_infix = try std.fmt.allocPrint(allocator, "/node_modules/{s}/", .{dep_name});
-            defer allocator.free(cycle_infix);
-            const cycle_suffix = try std.fmt.allocPrint(allocator, "/node_modules/{s}", .{dep_name});
-            defer allocator.free(cycle_suffix);
-            if (std.mem.startsWith(u8, hp.install_path, cycle_prefix) or
-                std.mem.indexOf(u8, hp.install_path, cycle_infix) != null or
-                std.mem.endsWith(u8, hp.install_path, cycle_suffix))
-            {
-                continue; // Cycle detected - ancestor already provides this package
-            }
-
-            // Install nested under this package's directory.
-            const nested_path = try std.fmt.allocPrint(
-                allocator,
-                "{s}/node_modules/{s}",
-                .{ hp.install_path, dep_name },
-            );
-            if (added_paths.contains(nested_path)) {
-                allocator.free(nested_path);
-                continue;
-            }
-            try added_paths.put(allocator, nested_path, {});
-
-            const new_hp = HoistedPackage{
-                .name = dep_pkg.name,
-                .version = dep_pkg.version,
-                .install_path = nested_path,
-                .pkg = dep_pkg,
-            };
-            try result.append(new_hp);
-            // Enqueue the newly-nested package so its own deps are checked.
-            try work_queue.append(new_hp);
         }
     }
 
     return result.toOwnedSlice();
+}
+
+/// Nests `dep_name` under `hp` when the root-elected version does not satisfy
+/// `dep_range` and a better resolved candidate exists.
+fn nestDependencyIfNeeded(
+    allocator: std.mem.Allocator,
+    dep_name: []const u8,
+    dep_range: []const u8,
+    hp: *const HoistedPackage,
+    root_versions: *const std.StringHashMapUnmanaged([]const u8),
+    name_to_pkgs: *const std.StringHashMapUnmanaged(std.ArrayListUnmanaged(*const ResolvedPackage)),
+    added_paths: *std.StringHashMapUnmanaged(void),
+    result: *std.ArrayList(HoistedPackage),
+    work_queue: *std.ArrayList(HoistedPackage),
+) !void {
+    // Determine what version Node.js will find for this dep when walking up
+    // from hp's install_path. We approximate this as the root version.
+    const root_dep_ver = root_versions.get(dep_name) orelse return;
+
+    // If root version satisfies the required range, no nesting needed.
+    if (semver.satisfies(allocator, root_dep_ver, dep_range)) return;
+
+    // Root version doesn't satisfy; find the best matching candidate.
+    const candidates = name_to_pkgs.get(dep_name) orelse return;
+    var best: ?*const ResolvedPackage = null;
+    for (candidates.items) |candidate| {
+        if (!semver.satisfies(allocator, candidate.version, dep_range)) continue;
+        if (best == null or semver.compareVersions(candidate.version, best.?.version) == .gt) {
+            best = candidate;
+        }
+    }
+    const dep_pkg = best orelse return;
+
+    // Cycle detection: if dep_name already appears anywhere in the current
+    // install_path ancestor chain, Node.js module resolution will already find
+    // it by walking up - no further nesting needed.
+    const cycle_prefix = try std.fmt.allocPrint(allocator, "node_modules/{s}/", .{dep_name});
+    defer allocator.free(cycle_prefix);
+    const cycle_infix = try std.fmt.allocPrint(allocator, "/node_modules/{s}/", .{dep_name});
+    defer allocator.free(cycle_infix);
+    const cycle_suffix = try std.fmt.allocPrint(allocator, "/node_modules/{s}", .{dep_name});
+    defer allocator.free(cycle_suffix);
+    if (std.mem.startsWith(u8, hp.install_path, cycle_prefix) or
+        std.mem.indexOf(u8, hp.install_path, cycle_infix) != null or
+        std.mem.endsWith(u8, hp.install_path, cycle_suffix))
+    {
+        return;
+    }
+
+    // Install nested under this package's directory.
+    const nested_path = try std.fmt.allocPrint(
+        allocator,
+        "{s}/node_modules/{s}",
+        .{ hp.install_path, dep_name },
+    );
+    if (added_paths.contains(nested_path)) {
+        allocator.free(nested_path);
+        return;
+    }
+    try added_paths.put(allocator, nested_path, {});
+
+    const new_hp = HoistedPackage{
+        .name = dep_pkg.name,
+        .version = dep_pkg.version,
+        .install_path = nested_path,
+        .pkg = dep_pkg,
+    };
+    try result.append(new_hp);
+    try work_queue.append(new_hp);
 }
 
 // ============================================================================

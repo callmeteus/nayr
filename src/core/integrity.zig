@@ -160,12 +160,70 @@ fn hashNodeModulesListing(
     for (names.items) |name| {
         hasher.update(name);
         hasher.update("\n");
+        // Hash nested node_modules for this package so missing version-specific
+        // installs (e.g. parse5/node_modules/entities@6 when root has entities@2)
+        // invalidate the integrity file and trigger a full link pass.
+        try hashNestedNodeModulesListing(allocator, hasher, nm_path, name);
     }
 
     // Hash the .bin/ directory listing so that missing bin stubs (e.g. .bin/tsc)
     // are detected as a hash mismatch, causing the next `nayr install` to run the
     // full link phase instead of exiting early with "Already up to date".
     try hashBinListing(allocator, hasher, nm_path);
+}
+
+/// Hashes the sorted nested package names under `{nm_path}/{parent}/node_modules/`.
+fn hashNestedNodeModulesListing(
+    allocator: std.mem.Allocator,
+    hasher: *std.crypto.hash.sha2.Sha256,
+    nm_path: []const u8,
+    parent_name: []const u8,
+) !void {
+    const parent_nm = try std.fs.path.join(allocator, &.{ nm_path, parent_name, "node_modules" });
+    defer allocator.free(parent_nm);
+
+    var nested_dir = std.fs.openDirAbsolute(parent_nm, .{ .iterate = true }) catch return;
+    defer nested_dir.close();
+
+    var nested_names = std.ArrayList([]const u8).init(allocator);
+    defer {
+        for (nested_names.items) |n| allocator.free(n);
+        nested_names.deinit();
+    }
+
+    var it = nested_dir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.name[0] == '.') continue;
+        if (entry.kind != .directory and entry.kind != .sym_link) continue;
+
+        if (entry.name[0] == '@') {
+            const scope_path = try std.fs.path.join(allocator, &.{ parent_nm, entry.name });
+            defer allocator.free(scope_path);
+            var scope_dir = std.fs.openDirAbsolute(scope_path, .{ .iterate = true }) catch continue;
+            defer scope_dir.close();
+            var sit = scope_dir.iterate();
+            while (try sit.next()) |sub| {
+                if (sub.kind != .directory and sub.kind != .sym_link) continue;
+                try nested_names.append(try std.fmt.allocPrint(allocator, "{s}/{s}", .{ entry.name, sub.name }));
+            }
+            continue;
+        }
+
+        try nested_names.append(try allocator.dupe(u8, entry.name));
+    }
+
+    std.mem.sort([]const u8, nested_names.items, {}, struct {
+        fn lt(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lt);
+
+    for (nested_names.items) |nested| {
+        hasher.update(parent_name);
+        hasher.update("/");
+        hasher.update(nested);
+        hasher.update("\n");
+    }
 }
 
 /// Hashes the sorted list of entries in `node_modules/.bin/` into `hasher`.
