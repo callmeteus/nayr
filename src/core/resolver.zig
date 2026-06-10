@@ -181,6 +181,9 @@ pub fn resolve(
     };
     defer existing_lock.deinit(allocator);
 
+    var lock_name_index = try LockNameIndex.build(allocator, &existing_lock);
+    defer lock_name_index.deinit(allocator);
+
     // --- Discover workspaces ---
     const workspaces = try ws_discovery.discover(allocator, root_dir);
     var ws_res = try ws_resolver.WorkspaceResolver.init(allocator, workspaces);
@@ -196,11 +199,13 @@ pub fn resolve(
     defer queue.deinit();
 
     var resolved_set = std.StringHashMapUnmanaged(ResolvedPackage){};
-    var visited = std.StringHashMapUnmanaged(void){};
+    // Tracks name@range pairs already queued so shared transitive deps are not
+    // enqueued once per parent (lodash can appear in thousands of lockfile entries).
+    var seen = std.StringHashMapUnmanaged(void){};
     defer {
-        var vis_it = visited.keyIterator();
-        while (vis_it.next()) |k| allocator.free(k.*);
-        visited.deinit(allocator);
+        var seen_it = seen.keyIterator();
+        while (seen_it.next()) |k| allocator.free(k.*);
+        seen.deinit(allocator);
     }
 
     // Maps "name@range" → "name@version".  Built as packages are resolved so
@@ -229,11 +234,6 @@ pub fn resolve(
         if (ws.manifest.name) |n| try workspace_names.put(allocator, n, {});
     }
 
-    try enqueueDeps(allocator, &queue, &root_manifest, opts);
-    for (workspaces) |*ws| {
-        try enqueueDeps(allocator, &queue, &ws.manifest, opts);
-    }
-
     var overrides = std.StringHashMapUnmanaged([]const u8){};
     defer overrides.deinit(allocator);
     var ov_it = root_manifest.resolutions.iterator();
@@ -251,6 +251,68 @@ pub fn resolve(
             allocator.free(kv.value_ptr.*);
         }
         links_map.deinit(allocator);
+    }
+
+    // Cache parsed semver ranges for the whole resolve pass.  Without this,
+    // satisfies() would allocate a fresh arena on every lockfile lookup - tens
+    // of thousands of times on large monorepos.
+    var range_cache = RangeCache.init(allocator);
+    defer range_cache.deinit();
+
+    const use_preloaded_graph = !opts.force and existing_lock.entries.len > 0;
+
+    // Preload every lockfile entry so BFS only walks the graph to enqueue
+    // transitive deps - it does not re-copy metadata for each registry package.
+    if (use_preloaded_graph) {
+        try preloadLockfileEntries(
+            allocator,
+            &existing_lock,
+            config,
+            &resolved_set,
+            &range_to_key,
+        );
+    }
+
+    if (use_preloaded_graph) {
+        // Registry packages are already in resolved_set from preload.  Only queue
+        // git/link/workspace direct deps and walk their subtrees.
+        if (!try seedDirectDepsFromManifest(
+            allocator,
+            &queue,
+            &seen,
+            &root_manifest,
+            &existing_lock,
+            &lock_name_index,
+            &range_cache,
+            &range_to_key,
+            &overrides,
+            &links_map,
+            opts,
+        )) {
+            try enqueueDeps(allocator, &queue, &seen, &root_manifest, opts);
+        }
+        for (workspaces) |*ws| {
+            if (!try seedDirectDepsFromManifest(
+                allocator,
+                &queue,
+                &seen,
+                &ws.manifest,
+                &existing_lock,
+                &lock_name_index,
+                &range_cache,
+                &range_to_key,
+                &overrides,
+                &links_map,
+                opts,
+            )) {
+                try enqueueDeps(allocator, &queue, &seen, &ws.manifest, opts);
+            }
+        }
+    } else {
+        try enqueueDeps(allocator, &queue, &seen, &root_manifest, opts);
+        for (workspaces) |*ws| {
+            try enqueueDeps(allocator, &queue, &seen, &ws.manifest, opts);
+        }
     }
 
     // --- Wave-based parallel BFS ---
@@ -279,11 +341,6 @@ pub fn resolve(
             const req = queue.items[qi];
             qi += 1;
 
-            const dedupe_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ req.name, req.range });
-            defer allocator.free(dedupe_key);
-            if (visited.contains(dedupe_key)) continue;
-            try visited.put(allocator, try allocator.dupe(u8, dedupe_key), {});
-
             const effective_range = overrides.get(req.name) orelse req.range;
 
             // 1. Workspace hit.
@@ -310,11 +367,6 @@ pub fn resolve(
                     allocator.free(rp.name);
                     allocator.free(rp.version);
                 }
-                writer.emit(.{ .resolve_progress = .{
-                    .resolved = @intCast(resolved_set.count()),
-                    .total = @intCast(queue.items.len),
-                    .name = req.name,
-                } });
                 continue;
             }
 
@@ -342,8 +394,8 @@ pub fn resolve(
                         local_version_owned = try allocator.dupe(u8, v);
                     }
                     // Enqueue runtime deps before freeing (enqueueMapDeps dupes strings).
-                    try enqueueMapDeps(allocator, &queue, &m.dependencies, false);
-                    try enqueueMapDeps(allocator, &queue, &m.optional_dependencies, opts.ignore_optional);
+                    try enqueueMapDeps(allocator, &queue, &seen, &m.dependencies, false, false);
+                    try enqueueMapDeps(allocator, &queue, &seen, &m.optional_dependencies, opts.ignore_optional, true);
                     m.deinit(allocator);
                 }
                 defer allocator.free(local_version_owned);
@@ -369,11 +421,6 @@ pub fn resolve(
                 } else {
                     allocator.free(key);
                 }
-                writer.emit(.{ .resolve_progress = .{
-                    .resolved = @intCast(resolved_set.count()),
-                    .total = @intCast(queue.items.len),
-                    .name = req.name,
-                } });
                 continue;
             }
 
@@ -381,19 +428,14 @@ pub fn resolve(
             if (!opts.force) {
                 const lock_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ req.name, effective_range });
                 defer allocator.free(lock_key);
-                if (existing_lock.get(lock_key)) |entry| {
+                if (lock_name_index.find(&existing_lock, &range_cache, req.name, effective_range)) |entry| {
                     // A lockfile entry whose `resolved` field is an absolute local
                     // path is machine-specific and must never be trusted on other
                     // machines.  Fall through and re-resolve from the original dep
                     // specifier (git URL, registry, etc.) so a portable entry is
                     // written on the next lockfile flush.
                     const resolved_is_local = entry.resolved.len > 0 and entry.resolved[0] == '/';
-                    // A lockfile entry with no resolved URL (e.g. a Yarn Classic stub for a
-                // platform-specific optional dep that wasn't installed on the machine that
-                // generated the lockfile) must fall through to fresh registry resolution so
-                // nayr can fetch the actual tarball URL.
-                const resolved_is_stub = !isGitDep(entry.resolved) and entry.resolved.len == 0;
-                if (semver.satisfies(allocator, entry.version, effective_range) and !resolved_is_local and !resolved_is_stub) {
+                    if (range_cache.satisfies(entry.version, effective_range) and !resolved_is_local) {
                         const map_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ req.name, entry.version });
 
                         // Record range → resolved key for lockfile pattern generation.
@@ -408,19 +450,15 @@ pub fn resolve(
                             gop.value_ptr.* = rtk_val;
                         }
 
-                        if (resolved_set.contains(map_key)) {
-                            allocator.free(map_key);
-                        } else {
+                        const already_resolved = resolved_set.contains(map_key);
+                        if (!already_resolved) {
                             const rp = try resolvedFromLockEntry(allocator, req.name, entry, config);
                             try resolved_set.put(allocator, map_key, rp);
+                            try enqueueMapDeps(allocator, &queue, &seen, &entry.dependencies, false, false);
+                            try enqueueMapDeps(allocator, &queue, &seen, &entry.optional_dependencies, opts.ignore_optional, true);
+                        } else {
+                            allocator.free(map_key);
                         }
-                        try enqueueMapDeps(allocator, &queue, &entry.dependencies, false);
-                        try enqueueMapDeps(allocator, &queue, &entry.optional_dependencies, opts.ignore_optional);
-                        writer.emit(.{ .resolve_progress = .{
-                            .resolved = @intCast(resolved_set.count()),
-                            .total = @intCast(queue.items.len),
-                            .name = req.name,
-                        } });
                         continue;
                     }
                 }
@@ -468,11 +506,6 @@ pub fn resolve(
                 } else {
                     try resolved_set.put(allocator, key, rp);
                 }
-                writer.emit(.{ .resolve_progress = .{
-                    .resolved = @intCast(resolved_set.count()),
-                    .total = @intCast(queue.items.len),
-                    .name = req.name,
-                } });
                 continue;
             }
 
@@ -669,8 +702,8 @@ pub fn resolve(
 
                 if (resolved_set.contains(key)) {
                     allocator.free(key);
-                    try enqueueMapDeps(allocator, &queue, &ver_info.dependencies, false);
-                    try enqueueMapDeps(allocator, &queue, &ver_info.optional_dependencies, opts.ignore_optional);
+                    try enqueueMapDeps(allocator, &queue, &seen, &ver_info.dependencies, false, false);
+                    try enqueueMapDeps(allocator, &queue, &seen, &ver_info.optional_dependencies, opts.ignore_optional, true);
                     continue;
                 }
 
@@ -689,8 +722,8 @@ pub fn resolve(
                 };
                 try resolved_set.put(allocator, key, rp);
 
-                try enqueueMapDeps(allocator, &queue, &ver_info.dependencies, false);
-                try enqueueMapDeps(allocator, &queue, &ver_info.optional_dependencies, opts.ignore_optional);
+                try enqueueMapDeps(allocator, &queue, &seen, &ver_info.dependencies, false, false);
+                try enqueueMapDeps(allocator, &queue, &seen, &ver_info.optional_dependencies, opts.ignore_optional, true);
 
                 writer.emit(.{ .resolve_progress = .{
                     .resolved = @intCast(resolved_set.count()),
@@ -760,6 +793,7 @@ const PendingFetch = struct {
 fn enqueueDeps(
     allocator: std.mem.Allocator,
     queue: *std.ArrayList(DepRequest),
+    seen: *std.StringHashMapUnmanaged(void),
     manifest: *const PackageJson,
     opts: ResolverOptions,
 ) !void {
@@ -768,33 +802,41 @@ fn enqueueDeps(
     if (!opts.production) {
         var it = manifest.dev_dependencies.iterator();
         while (it.next()) |kv| {
-            try queue.append(.{
-                .name = try allocator.dupe(u8, kv.key_ptr.*),
-                .range = try allocator.dupe(u8, kv.value_ptr.*),
-                .optional = false,
-            });
+            try tryEnqueue(allocator, queue, seen, kv.key_ptr.*, kv.value_ptr.*, false);
         }
     }
 
     var it = manifest.dependencies.iterator();
     while (it.next()) |kv| {
-        try queue.append(.{
-            .name = try allocator.dupe(u8, kv.key_ptr.*),
-            .range = try allocator.dupe(u8, kv.value_ptr.*),
-            .optional = false,
-        });
+        try tryEnqueue(allocator, queue, seen, kv.key_ptr.*, kv.value_ptr.*, false);
     }
 
     if (!opts.ignore_optional) {
         var oit = manifest.optional_dependencies.iterator();
         while (oit.next()) |kv| {
-            try queue.append(.{
-                .name = try allocator.dupe(u8, kv.key_ptr.*),
-                .range = try allocator.dupe(u8, kv.value_ptr.*),
-                .optional = true,
-            });
+            try tryEnqueue(allocator, queue, seen, kv.key_ptr.*, kv.value_ptr.*, true);
         }
     }
+}
+
+/// Enqueues a dependency request if this name@range pair has not been seen yet.
+fn tryEnqueue(
+    allocator: std.mem.Allocator,
+    queue: *std.ArrayList(DepRequest),
+    seen: *std.StringHashMapUnmanaged(void),
+    name: []const u8,
+    range: []const u8,
+    optional: bool,
+) !void {
+    const key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ name, range });
+    defer allocator.free(key);
+    if (seen.contains(key)) return;
+    try seen.put(allocator, try allocator.dupe(u8, key), {});
+    try queue.append(.{
+        .name = try allocator.dupe(u8, name),
+        .range = try allocator.dupe(u8, range),
+        .optional = optional,
+    });
 }
 
 /// Frees a `ResolvedPackage` that was never inserted into `resolved_set`
@@ -882,17 +924,15 @@ fn walkLinksIntoMap(
 fn enqueueMapDeps(
     allocator: std.mem.Allocator,
     queue: *std.ArrayList(DepRequest),
+    seen: *std.StringHashMapUnmanaged(void),
     map: *const std.StringHashMapUnmanaged([]const u8),
     skip: bool,
+    optional: bool,
 ) !void {
     if (skip) return;
     var it = map.iterator();
     while (it.next()) |kv| {
-        try queue.append(.{
-            .name = try allocator.dupe(u8, kv.key_ptr.*),
-            .range = try allocator.dupe(u8, kv.value_ptr.*),
-            .optional = false,
-        });
+        try tryEnqueue(allocator, queue, seen, kv.key_ptr.*, kv.value_ptr.*, optional);
     }
 }
 
@@ -905,21 +945,228 @@ fn resolvedFromLockEntry(
     // A lockfile entry is a git dep when its resolved URL starts with a known
     // git scheme (the same check used during fresh resolution).
     const git = isGitDep(entry.resolved) or isGitDep(entry.version);
+    const registry = config.getRegistry(extractScope(name));
+    const tarball_url = blk: {
+        if (git and entry.resolved.len == 0) {
+            break :blk try allocator.dupe(u8, entry.version);
+        }
+        if (entry.resolved.len > 0) {
+            break :blk try allocator.dupe(u8, entry.resolved);
+        }
+        // Yarn Classic stubs: version without resolved URL (common for optional
+        // platform packages). Build the tarball URL locally instead of hitting
+        // the registry metadata API during resolve.
+        break :blk try registry_client.registryTarballUrl(allocator, registry, name, entry.version);
+    };
     return ResolvedPackage{
         .name = try allocator.dupe(u8, name),
         .version = try allocator.dupe(u8, entry.version),
-        // For git deps the resolved field holds the original git URL (with any
-        // branch/subdir fragment).  Fall back to the version string so that
-        // packages written by older nayr versions (resolved="") still work.
-        .tarball_url = try allocator.dupe(u8, if (git and entry.resolved.len == 0) entry.version else entry.resolved),
+        .tarball_url = tarball_url,
         .integrity = try allocator.dupe(u8, entry.integrity),
-        .registry = try allocator.dupe(u8, config.getRegistry(extractScope(name))),
+        .registry = try allocator.dupe(u8, registry),
         .is_workspace = false,
         .is_git = git,
         .dependencies = try copyStringMap(allocator, &entry.dependencies),
         .optional_dependencies = try copyStringMap(allocator, &entry.optional_dependencies),
     };
 }
+
+/// Index of lockfile entries grouped by package name for semver-aware lookups.
+const LockNameIndex = struct {
+    by_name: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(usize)),
+
+    fn build(allocator: std.mem.Allocator, lock: *const Lockfile) !LockNameIndex {
+        var by_name = std.StringHashMapUnmanaged(std.ArrayListUnmanaged(usize)){};
+        errdefer {
+            var it = by_name.iterator();
+            while (it.next()) |kv| allocator.free(kv.key_ptr.*);
+            by_name.deinit(allocator);
+        }
+
+        for (lock.entries, 0..) |*entry, idx| {
+            if (entry.patterns.len == 0) continue;
+            const name = patternPackageName(entry.patterns[0]) orelse continue;
+            const gop = try by_name.getOrPut(allocator, name);
+            if (!gop.found_existing) {
+                const owned = try allocator.dupe(u8, name);
+                gop.key_ptr.* = owned;
+                gop.value_ptr.* = .{};
+            }
+            try gop.value_ptr.append(allocator, idx);
+        }
+
+        return .{ .by_name = by_name };
+    }
+
+    fn deinit(self: *LockNameIndex, allocator: std.mem.Allocator) void {
+        var it = self.by_name.iterator();
+        while (it.next()) |kv| {
+            allocator.free(kv.key_ptr.*);
+            kv.value_ptr.deinit(allocator);
+        }
+        self.by_name.deinit(allocator);
+    }
+
+    /// Finds a lockfile entry for `name` whose pinned version satisfies `range`.
+    fn find(
+        self: *const LockNameIndex,
+        lock: *const Lockfile,
+        range_cache: *RangeCache,
+        name: []const u8,
+        range: []const u8,
+    ) ?*const lockfile_types.LockfileEntry {
+        const exact_key = std.fmt.allocPrint(range_cache.arena.allocator(), "{s}@{s}", .{ name, range }) catch return null;
+        defer range_cache.arena.allocator().free(exact_key);
+        if (lock.get(exact_key)) |entry| {
+            const resolved_is_local = entry.resolved.len > 0 and entry.resolved[0] == '/';
+            if (!resolved_is_local and range_cache.satisfies(entry.version, range)) return entry;
+        }
+
+        const indices = self.by_name.get(name) orelse return null;
+        for (indices.items) |idx| {
+            const entry = &lock.entries[idx];
+            const resolved_is_local = entry.resolved.len > 0 and entry.resolved[0] == '/';
+            if (resolved_is_local) continue;
+            if (range_cache.satisfies(entry.version, range)) return entry;
+        }
+        return null;
+    }
+};
+
+/// Returns the package name embedded in a lockfile pattern (`name@range`).
+fn patternPackageName(pattern: []const u8) ?[]const u8 {
+    const at = std.mem.lastIndexOfScalar(u8, pattern, '@') orelse return null;
+    if (at == 0) return null;
+    return pattern[0..at];
+}
+
+/// Seeds the BFS queue from direct manifest dependencies only.
+///
+/// Registry deps already present in the preloaded lockfile are recorded in
+/// `range_to_key` without entering the queue.  Returns `false` when a registry
+/// dep is missing from the lockfile, signalling that the full graph walk is needed.
+fn seedDirectDepsFromManifest(
+    allocator: std.mem.Allocator,
+    queue: *std.ArrayList(DepRequest),
+    seen: *std.StringHashMapUnmanaged(void),
+    manifest: *const PackageJson,
+    lock: *const Lockfile,
+    index: *const LockNameIndex,
+    range_cache: *RangeCache,
+    range_to_key: *std.StringHashMapUnmanaged([]const u8),
+    overrides: *const std.StringHashMapUnmanaged([]const u8),
+    links_map: *const std.StringHashMapUnmanaged([]const u8),
+    opts: ResolverOptions,
+) !bool {
+    var all_registry_covered = true;
+
+    const dep_maps = [_]struct {
+        map: *const std.StringHashMapUnmanaged([]const u8),
+        skip: bool,
+        optional: bool,
+    }{
+        .{ .map = &manifest.dev_dependencies, .skip = opts.production, .optional = false },
+        .{ .map = &manifest.dependencies, .skip = false, .optional = false },
+        .{ .map = &manifest.optional_dependencies, .skip = opts.ignore_optional, .optional = true },
+    };
+
+    for (dep_maps) |dm| {
+        if (dm.skip) continue;
+        var it = dm.map.iterator();
+        while (it.next()) |kv| {
+            const name = kv.key_ptr.*;
+            const range = overrides.get(name) orelse kv.value_ptr.*;
+            if (isGitDep(range) or links_map.contains(name)) {
+                try tryEnqueue(allocator, queue, seen, name, range, dm.optional);
+                continue;
+            }
+            if (index.find(lock, range_cache, name, range)) |entry| {
+                const lock_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ name, range });
+                defer allocator.free(lock_key);
+                const map_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ name, entry.version });
+                defer allocator.free(map_key);
+                const rtk_pat = try allocator.dupe(u8, lock_key);
+                const rtk_val = try allocator.dupe(u8, map_key);
+                const gop = try range_to_key.getOrPut(allocator, rtk_pat);
+                if (gop.found_existing) {
+                    allocator.free(rtk_pat);
+                    allocator.free(gop.value_ptr.*);
+                }
+                gop.value_ptr.* = rtk_val;
+            } else {
+                all_registry_covered = false;
+                try tryEnqueue(allocator, queue, seen, name, range, dm.optional);
+            }
+        }
+    }
+
+    return all_registry_covered;
+}
+
+/// Loads every lockfile entry into `resolved_set` in one linear pass.
+fn preloadLockfileEntries(
+    allocator: std.mem.Allocator,
+    lock: *const Lockfile,
+    config: *const Config,
+    resolved_set: *std.StringHashMapUnmanaged(ResolvedPackage),
+    range_to_key: *std.StringHashMapUnmanaged([]const u8),
+) !void {
+    for (lock.entries) |*entry| {
+        if (entry.patterns.len == 0) continue;
+        const name = patternPackageName(entry.patterns[0]) orelse continue;
+        const map_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ name, entry.version });
+        errdefer allocator.free(map_key);
+
+        for (entry.patterns) |pat| {
+            const rtk_pat = try allocator.dupe(u8, pat);
+            const rtk_val = try allocator.dupe(u8, map_key);
+            const gop = try range_to_key.getOrPut(allocator, rtk_pat);
+            if (gop.found_existing) {
+                allocator.free(rtk_pat);
+                allocator.free(gop.value_ptr.*);
+            }
+            gop.value_ptr.* = rtk_val;
+        }
+
+        if (!resolved_set.contains(map_key)) {
+            const rp = try resolvedFromLockEntry(allocator, name, entry, config);
+            try resolved_set.put(allocator, map_key, rp);
+        } else {
+            allocator.free(map_key);
+        }
+    }
+}
+
+/// Parsed semver range cache scoped to a single resolve() call.
+const RangeCache = struct {
+    arena: std.heap.ArenaAllocator,
+    map: std.StringHashMapUnmanaged(semver.Range),
+
+    fn init(parent: std.mem.Allocator) RangeCache {
+        return .{
+            .arena = std.heap.ArenaAllocator.init(parent),
+            .map = .{},
+        };
+    }
+
+    fn deinit(self: *RangeCache) void {
+        self.map.deinit(self.arena.allocator());
+        self.arena.deinit();
+    }
+
+    fn satisfies(self: *RangeCache, version_str: []const u8, range_str: []const u8) bool {
+        const a = self.arena.allocator();
+        const gop = self.map.getOrPut(a, range_str) catch return false;
+        if (!gop.found_existing) {
+            gop.value_ptr.* = semver.Range.parse(a, range_str) catch {
+                _ = self.map.remove(range_str);
+                return false;
+            };
+        }
+        const v = semver.Version.parse(version_str) catch return false;
+        return gop.value_ptr.*.satisfies(v);
+    }
+};
 
 /// Deep-copies a `StringHashMapUnmanaged([]const u8)` with owned keys and values.
 fn copyStringMap(

@@ -878,6 +878,28 @@ fn extractScope(name: []const u8) ?[]const u8 {
     return name[0..slash];
 }
 
+/// Builds the canonical npm registry tarball URL for a package name and version.
+///
+/// Examples:
+///   lodash 1.2.3 → https://registry.npmjs.org/lodash/-/lodash-1.2.3.tgz
+///   @babel/core 7.0.0 → https://registry.npmjs.org/@babel%2Fcore/-/core-7.0.0.tgz
+pub fn registryTarballUrl(
+    allocator: std.mem.Allocator,
+    registry: []const u8,
+    name: []const u8,
+    version: []const u8,
+) ![]const u8 {
+    const encoded = try encodeName(allocator, name);
+    defer if (!std.mem.eql(u8, encoded, name)) allocator.free(encoded);
+    const tarball_name = if (std.mem.indexOfScalar(u8, name, '/')) |slash| name[slash + 1 ..] else name;
+    return std.fmt.allocPrint(allocator, "{s}/{s}/-/{s}-{s}.tgz", .{
+        std.mem.trimRight(u8, registry, "/"),
+        encoded,
+        tarball_name,
+        version,
+    });
+}
+
 /// URL-encodes the `/` in scoped package names for registry API paths.
 ///
 /// `@babel/core` → `@babel%2Fcore`
