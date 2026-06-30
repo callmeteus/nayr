@@ -122,4 +122,67 @@ pub const Lockfile = struct {
         }
         self.workspaces.deinit(allocator);
     }
+
+    /// Returns true when two lockfiles describe the same resolved graph.
+    ///
+    /// Pattern order and entry order are ignored; workspace metadata must match.
+    pub fn semanticEqual(a: *const Lockfile, b: *const Lockfile) bool {
+        if (a.entries.len != b.entries.len) return false;
+        if (a.workspaces.count() != b.workspaces.count()) return false;
+
+        for (a.entries) |*a_entry| {
+            var matched = false;
+            for (b.entries) |*b_entry| {
+                if (lockfileEntryEqual(a_entry, b_entry)) {
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) return false;
+        }
+
+        var ws_it = a.workspaces.iterator();
+        while (ws_it.next()) |kv| {
+            const other = b.workspaces.get(kv.key_ptr.*) orelse return false;
+            if (!std.mem.eql(u8, kv.value_ptr.*.location, other.location)) return false;
+            if (!std.mem.eql(u8, kv.value_ptr.*.version, other.version)) return false;
+        }
+
+        return true;
+    }
 };
+
+fn lockfileEntryEqual(a: *const LockfileEntry, b: *const LockfileEntry) bool {
+    if (!std.mem.eql(u8, a.version, b.version)) return false;
+    if (!std.mem.eql(u8, a.resolved, b.resolved)) return false;
+    if (!std.mem.eql(u8, a.integrity, b.integrity)) return false;
+    if (a.patterns.len != b.patterns.len) return false;
+    if (!stringMapEqual(&a.dependencies, &b.dependencies)) return false;
+    if (!stringMapEqual(&a.optional_dependencies, &b.optional_dependencies)) return false;
+
+    for (a.patterns) |pat| {
+        var found = false;
+        for (b.patterns) |other_pat| {
+            if (std.mem.eql(u8, pat, other_pat)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+    }
+
+    return true;
+}
+
+fn stringMapEqual(
+    a: *const std.StringHashMapUnmanaged([]const u8),
+    b: *const std.StringHashMapUnmanaged([]const u8),
+) bool {
+    if (a.count() != b.count()) return false;
+    var it = a.iterator();
+    while (it.next()) |kv| {
+        const other = b.get(kv.key_ptr.*) orelse return false;
+        if (!std.mem.eql(u8, kv.value_ptr.*, other)) return false;
+    }
+    return true;
+}

@@ -38,6 +38,7 @@ const ws_discovery = @import("../workspace/discovery.zig");
 const ws_resolver = @import("../workspace/resolver.zig");
 const output = @import("../util/output.zig");
 const platform = @import("../util/platform.zig");
+const frozen_lockfile = @import("frozen_lockfile.zig");
 const IoTrace = @import("../util/io_trace.zig").IoTrace;
 const PackageJson = json_util.PackageJson;
 const Lockfile = lockfile_types.Lockfile;
@@ -259,6 +260,23 @@ pub fn resolve(
     var range_cache = RangeCache.init(allocator);
     defer range_cache.deinit();
 
+    if (opts.frozen_lockfile) {
+        try frozen_lockfile.FrozenLockfile.validateLoadedManifests(
+            allocator,
+            &existing_lock,
+            &root_manifest,
+            workspaces,
+            &overrides,
+            &workspace_names,
+            &links_map,
+            .{
+                .production = opts.production,
+                .ignore_optional = opts.ignore_optional,
+            },
+            writer,
+        );
+    }
+
     const use_preloaded_graph = !opts.force and existing_lock.entries.len > 0;
 
     // Preload every lockfile entry so BFS only walks the graph to enqueue
@@ -288,7 +306,11 @@ pub fn resolve(
             &overrides,
             &links_map,
             opts,
+            writer,
         )) {
+            if (opts.frozen_lockfile) {
+                try frozen_lockfile.FrozenLockfile.failWithHint(allocator, writer, "transitive dependency graph out of sync with lockfile");
+            }
             try enqueueDeps(allocator, &queue, &seen, &root_manifest, opts);
         }
         for (workspaces) |*ws| {
@@ -304,7 +326,11 @@ pub fn resolve(
                 &overrides,
                 &links_map,
                 opts,
+                writer,
             )) {
+                if (opts.frozen_lockfile) {
+                    try frozen_lockfile.FrozenLockfile.failWithHint(allocator, writer, "transitive dependency graph out of sync with lockfile");
+                }
                 try enqueueDeps(allocator, &queue, &seen, &ws.manifest, opts);
             }
         }
@@ -466,7 +492,9 @@ pub fn resolve(
 
             // 3. Git dependency (serial - uncommon).
             if (isGitDep(effective_range)) {
-                if (opts.frozen_lockfile) return error.FrozenLockfileChanged;
+                if (opts.frozen_lockfile) {
+                    try frozen_lockfile.FrozenLockfile.failMissingDep(allocator, writer, req.name, effective_range);
+                }
 
                 // Security: git host allow-list.
                 // Skipped for the developer's own packages (auto_link_patterns
@@ -510,7 +538,9 @@ pub fn resolve(
             }
 
             // 4. Registry - defer to the wave's batch.
-            if (opts.frozen_lockfile) return error.FrozenLockfileChanged;
+            if (opts.frozen_lockfile) {
+                try frozen_lockfile.FrozenLockfile.failMissingDep(allocator, writer, req.name, effective_range);
+            }
 
             // Security: registry allow-list.
             // Skipped for the developer's own packages (auto_link_patterns
@@ -757,6 +787,10 @@ pub fn resolve(
     allocator.free(workspaces);
 
     const new_lock = try buildLockfile(allocator, &resolved_set, &range_to_key);
+
+    if (opts.frozen_lockfile) {
+        try frozen_lockfile.FrozenLockfile.assertUnchanged(&existing_lock, &new_lock, allocator, writer);
+    }
 
     return ResolutionResult{
         .packages = resolved_set,
@@ -1057,6 +1091,7 @@ fn seedDirectDepsFromManifest(
     overrides: *const std.StringHashMapUnmanaged([]const u8),
     links_map: *const std.StringHashMapUnmanaged([]const u8),
     opts: ResolverOptions,
+    writer: output.Writer,
 ) !bool {
     var all_registry_covered = true;
 
@@ -1094,6 +1129,9 @@ fn seedDirectDepsFromManifest(
                 }
                 gop.value_ptr.* = rtk_val;
             } else {
+                if (opts.frozen_lockfile) {
+                    try frozen_lockfile.FrozenLockfile.failMissingDep(allocator, writer, name, range);
+                }
                 all_registry_covered = false;
                 try tryEnqueue(allocator, queue, seen, name, range, dm.optional);
             }

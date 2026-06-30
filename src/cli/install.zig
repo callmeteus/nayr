@@ -10,6 +10,7 @@ const linker_mod = @import("../core/linker.zig");
 const scripts_mod = @import("../core/scripts.zig");
 const integrity_mod = @import("../core/integrity.zig");
 const hoister_mod = @import("../core/hoister.zig");
+const frozen_lockfile_mod = @import("../core/frozen_lockfile.zig");
 const cache_mod = @import("../core/cache.zig");
 const nayr_fmt = @import("../lockfile/nayr_format.zig");
 const ws_discovery = @import("../workspace/discovery.zig");
@@ -148,6 +149,17 @@ pub fn run(
     // Fast path: integrity check.
     if (!opts.force and !opts.check_files) {
         if (try integrity_mod.isUpToDate(allocator, cwd)) {
+            if (opts.frozen_lockfile) {
+                try frozen_lockfile_mod.FrozenLockfile.validateManifests(
+                    allocator,
+                    cwd,
+                    .{
+                        .production = opts.production,
+                        .ignore_optional = opts.ignore_optional,
+                    },
+                    writer,
+                );
+            }
             writer.emit(.{ .done = .{
                 .elapsed_ms = @intCast(std.time.milliTimestamp() - start),
                 .summary = "Already up to date.",
@@ -293,9 +305,11 @@ pub fn run(
     }
 
     // --- Phase 6: Write lockfile ---
-    const lockfile_path = try std.fs.path.join(allocator, &.{ cwd, "nayr.lock" });
-    defer allocator.free(lockfile_path);
-    try nayr_fmt.writeFile(&resolution.lockfile, lockfile_path, allocator);
+    if (!opts.frozen_lockfile) {
+        const lockfile_path = try std.fs.path.join(allocator, &.{ cwd, "nayr.lock" });
+        defer allocator.free(lockfile_path);
+        try nayr_fmt.writeFile(&resolution.lockfile, lockfile_path, allocator);
+    }
 
     // --- Phase 7: Save integrity ---
     try integrity_mod.save(allocator, cwd);
