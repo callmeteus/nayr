@@ -32,6 +32,7 @@ const login_cmd = @import("login.zig");
 const publish_cmd = @import("publish.zig");
 const global_cmd = @import("global.zig");
 const config_cmd = @import("config.zig");
+const update_notifier = @import("../util/update_notifier.zig");
 
 /// nayr version string - embedded from package.json at build time.
 pub const VERSION = build_options.version;
@@ -49,6 +50,8 @@ pub const GlobalOptions = struct {
     cwd: []const u8,
     /// True when `cwd` was allocated by this struct and must be freed.
     cwd_owned: bool = false,
+    /// Skip background update checks and stale-version notices.
+    no_update_notifier: bool = false,
 
     pub fn deinit(self: *const GlobalOptions, allocator: std.mem.Allocator) void {
         if (self.cwd_owned) allocator.free(self.cwd);
@@ -95,9 +98,16 @@ fn resolveUserCwd(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
 /// - `allocator`: Main allocator for the CLI lifetime.
 /// - `args`: Raw process arguments (args[0] is the binary name).
 pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "__update-check")) {
+        const running_version = if (args.len >= 3) args[2] else VERSION;
+        try update_notifier.UpdateNotifier.runBackgroundCheck(allocator, running_version);
+        return;
+    }
+
     if (args.len < 2) {
         var default_opts = defaultGlobalOpts(allocator);
         defer default_opts.deinit(allocator);
+        maybeRunUpdateNotifier(default_opts);
         output.printBanner(default_opts.format, default_opts.silent);
         return runInstall(allocator, args, default_opts);
     }
@@ -106,6 +116,10 @@ pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const remaining = global.remaining;
     var opts = global.opts;
     defer opts.deinit(allocator);
+
+    if (shouldRunUpdateNotifier(remaining)) {
+        maybeRunUpdateNotifier(opts);
+    }
 
     // When only global flags were provided (no sub-command), run install.
     if (remaining.len == 0) {
@@ -348,6 +362,8 @@ fn parseGlobalOpts(allocator: std.mem.Allocator, args: []const []const u8) !Pars
             opts.silent = true;
         } else if (std.mem.eql(u8, arg, "--no-color")) {
             opts.no_color = true;
+        } else if (std.mem.eql(u8, arg, "--no-update-notifier")) {
+            opts.no_update_notifier = true;
         } else if (std.mem.eql(u8, arg, "--cwd") and i + 1 < args.len) {
             i += 1;
             // Replace the auto-detected cwd with the user-specified one.
@@ -407,6 +423,24 @@ fn stripGlobalFlag(allocator: std.mem.Allocator, args: []const []const u8) ![]co
         }
     }
     return out.toOwnedSlice();
+}
+
+fn maybeRunUpdateNotifier(opts: GlobalOptions) void {
+    update_notifier.UpdateNotifier.onCliStart(std.heap.page_allocator, VERSION, .{
+        .silent = opts.silent,
+        .no_color = opts.no_color,
+        .format = opts.format,
+        .disabled = opts.no_update_notifier,
+    });
+}
+
+fn shouldRunUpdateNotifier(remaining: []const []const u8) bool {
+    if (remaining.len == 0) return true;
+    const cmd = remaining[0];
+    if (std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "-v")) return false;
+    if (std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) return false;
+    if (std.mem.eql(u8, cmd, "__update-check")) return false;
+    return true;
 }
 
 fn printHelp() void {
