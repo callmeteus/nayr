@@ -27,8 +27,8 @@ const HoistedPackage = hoister.HoistedPackage;
 /// deepest dependencies run first so that a package's deps are ready when its
 /// own postinstall fires.
 ///
-/// Script stdout/stderr always stream live to the terminal so the user sees
-/// build output in real-time (same behaviour as npm/yarn).
+/// Script output is captured.  Only `--verbose` or a non-zero exit code causes
+/// stdout/stderr to be printed (Yarn Classic behaviour).
 ///
 /// ## Parameters
 /// - `allocator`: Scratch allocator.
@@ -66,9 +66,7 @@ pub fn runAll(
 
         for (lifecycle_scripts) |script_name| {
             if (manifest.scripts.get(script_name)) |script_cmd| {
-                writer.emit(.{ .script_start = .{ .name = hp.name, .script = script_name } });
-
-                const exit_code = runScript(allocator, script_cmd, pkg_dir, augmented_path) catch |err| {
+                const result = runScript(allocator, script_cmd, pkg_dir, augmented_path, writer.isVerbose()) catch |err| {
                     const emsg = std.fmt.allocPrint(
                         allocator,
                         "script {s} [{s}] failed: {s}",
@@ -80,16 +78,8 @@ pub fn runAll(
                     writer.emit(.{ .warning = emsg });
                     continue;
                 };
-
-                if (exit_code != 0) {
-                    const wmsg = try std.fmt.allocPrint(
-                        allocator,
-                        "script {s} [{s}] exited with code {d}",
-                        .{ script_name, hp.name, exit_code },
-                    );
-                    defer allocator.free(wmsg);
-                    writer.emit(.{ .warning = wmsg });
-                }
+                defer freeScriptResult(allocator, result);
+                reportScriptRun(allocator, writer, hp.name, script_name, result);
             }
         }
 
@@ -107,9 +97,8 @@ pub fn runAll(
                 installGitDepDependencies(allocator, pkg_dir, augmented_path, hp.name, writer);
 
                 const script_name = if (prepare_script != null) "prepare" else "build";
-                writer.emit(.{ .script_start = .{ .name = hp.name, .script = script_name } });
 
-                const exit_code = runScript(allocator, script_cmd, pkg_dir, augmented_path) catch |err| {
+                const result = runScript(allocator, script_cmd, pkg_dir, augmented_path, writer.isVerbose()) catch |err| {
                     const emsg = std.fmt.allocPrint(
                         allocator,
                         "script {s} [{s}] failed: {s}",
@@ -121,16 +110,8 @@ pub fn runAll(
                     writer.emit(.{ .warning = emsg });
                     continue;
                 };
-
-                if (exit_code != 0) {
-                    const wmsg = try std.fmt.allocPrint(
-                        allocator,
-                        "script {s} [{s}] exited with code {d}",
-                        .{ script_name, hp.name, exit_code },
-                    );
-                    defer allocator.free(wmsg);
-                    writer.emit(.{ .warning = wmsg });
-                }
+                defer freeScriptResult(allocator, result);
+                reportScriptRun(allocator, writer, hp.name, script_name, result);
             }
         }
     }
@@ -189,9 +170,7 @@ fn runRootScripts(
 
     for (script_names) |script_name| {
         if (manifest.scripts.get(script_name)) |script_cmd| {
-            writer.emit(.{ .script_start = .{ .name = pkg_name, .script = script_name } });
-
-            const exit_code = runScript(allocator, script_cmd, root_dir, augmented_path) catch |err| {
+            const result = runScript(allocator, script_cmd, root_dir, augmented_path, writer.isVerbose()) catch |err| {
                 const emsg = std.fmt.allocPrint(
                     allocator,
                     "script {s} [{s}] failed: {s}",
@@ -201,16 +180,8 @@ fn runRootScripts(
                 writer.emit(.{ .warning = emsg });
                 continue;
             };
-
-            if (exit_code != 0) {
-                const wmsg = try std.fmt.allocPrint(
-                    allocator,
-                    "script {s} [{s}] exited with code {d}",
-                    .{ script_name, pkg_name, exit_code },
-                );
-                defer allocator.free(wmsg);
-                writer.emit(.{ .warning = wmsg });
-            }
+            defer freeScriptResult(allocator, result);
+            reportScriptRun(allocator, writer, pkg_name, script_name, result);
         }
     }
 }
@@ -263,8 +234,8 @@ fn installGitDepDependencies(
     var child = std.process.Child.init(argv, allocator);
     child.cwd = pkg_dir;
     child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Inherit;
-    child.stderr_behavior = .Inherit;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
 
     if (path_override) |p| {
         var env_map = std.process.getEnvMap(allocator) catch return;
@@ -286,37 +257,86 @@ fn installGitDepDependencies(
     };
 }
 
+/// Captured stdout/stderr from a lifecycle script invocation.
+const ScriptResult = struct {
+    exit_code: u8,
+    stdout: []const u8,
+    stderr: []const u8,
+};
+
+const script_output_cap: usize = 512 * 1024;
+
+fn freeScriptResult(allocator: std.mem.Allocator, result: ScriptResult) void {
+    if (result.stdout.len > 0) allocator.free(result.stdout);
+    if (result.stderr.len > 0) allocator.free(result.stderr);
+}
+
+/// Emits script lifecycle events according to Yarn Classic rules.
+fn reportScriptRun(
+    allocator: std.mem.Allocator,
+    writer: output.Writer,
+    pkg_name: []const u8,
+    script_name: []const u8,
+    result: ScriptResult,
+) void {
+    const failed = result.exit_code != 0;
+    const verbose = writer.isVerbose();
+    const show_output = verbose or failed;
+
+    if (verbose) {
+        writer.emit(.{ .script_start = .{ .name = pkg_name, .script = script_name } });
+    }
+
+    if (show_output and (result.stdout.len > 0 or result.stderr.len > 0)) {
+        writer.emit(.{ .script_output = .{
+            .name = pkg_name,
+            .stdout = result.stdout,
+            .stderr = result.stderr,
+        } });
+    }
+
+    if (failed) {
+        const wmsg = std.fmt.allocPrint(
+            allocator,
+            "script {s} [{s}] exited with code {d}",
+            .{ script_name, pkg_name, result.exit_code },
+        ) catch return;
+        defer allocator.free(wmsg);
+        writer.emit(.{ .warning = wmsg });
+    }
+}
+
 /// Runs a single script command in the given working directory.
 ///
-/// stdout and stderr always stream live to the terminal so the user can
-/// see build progress in real-time (same behaviour as npm/yarn).
-///
-/// `path_override` replaces the PATH env var for the child process so that
-/// `node_modules/.bin/` executables are reachable by the script.
+/// stdout/stderr are captured.  Unless `verbose` is true, npm log env vars are
+/// set so node-gyp and similar tools stay quiet on success.
 fn runScript(
     allocator: std.mem.Allocator,
     cmd: []const u8,
     cwd: []const u8,
     path_override: ?[]const u8,
-) !u8 {
+    verbose: bool,
+) !ScriptResult {
     const argv = if (@import("builtin").os.tag == .windows)
         &[_][]const u8{ "cmd.exe", "/c", cmd }
     else
         &[_][]const u8{ "/bin/sh", "-c", cmd };
 
-    // Build an env map that mirrors the current environment but with an
-    // augmented PATH so lifecycle scripts can call installed binaries.
     var env_map = try std.process.getEnvMap(allocator);
     defer env_map.deinit();
     if (path_override) |p| try env_map.put("PATH", p);
+    if (!verbose) {
+        try env_map.put("npm_config_loglevel", "silent");
+        try env_map.put("npm_config_progress", "false");
+    }
 
     var child = std.process.Child.init(argv, allocator);
     child.cwd = cwd;
     child.env_map = &env_map;
     child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Inherit;
-    child.stderr_behavior = .Inherit;
-    const result = child.spawnAndWait() catch |err| {
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+    child.spawn() catch |err| {
         if (err == error.FileNotFound) {
             var note_buf: [512]u8 = undefined;
             if (std.fmt.bufPrint(&note_buf, "lifecycle spawn cwd={s} cmd={s}", .{ cwd, cmd })) |note| {
@@ -327,9 +347,22 @@ fn runScript(
         }
         return err;
     };
-    return switch (result) {
+
+    const stdout = try child.stdout.?.reader().readAllAlloc(allocator, script_output_cap);
+    errdefer allocator.free(stdout);
+    const stderr = try child.stderr.?.reader().readAllAlloc(allocator, script_output_cap);
+    errdefer allocator.free(stderr);
+
+    const term = try child.wait();
+    const exit_code: u8 = switch (term) {
         .Exited => |c| c,
         else => 1,
+    };
+
+    return ScriptResult{
+        .exit_code = exit_code,
+        .stdout = stdout,
+        .stderr = stderr,
     };
 }
 

@@ -116,11 +116,17 @@ pub const Writer = struct {
         emit: *const fn (ptr: *anyopaque, event: Event) void,
         flush: *const fn (ptr: *anyopaque) void,
         deinit: *const fn (ptr: *anyopaque) void,
+        is_verbose: *const fn (ptr: *anyopaque) bool,
     };
 
     /// Emits an event, delegating to the concrete implementation.
     pub fn emit(self: Writer, event: Event) void {
         self.vtable.emit(self.ptr, event);
+    }
+
+    /// Returns true when `--verbose` was passed on the CLI.
+    pub fn isVerbose(self: Writer) bool {
+        return self.vtable.is_verbose(self.ptr);
     }
 
     /// Flushes any buffered output.
@@ -237,6 +243,7 @@ const TuiWriter = struct {
         .emit = emit,
         .flush = flush,
         .deinit = deinitFn,
+        .is_verbose = isVerboseFn,
     };
 
     fn init(allocator: std.mem.Allocator, verbose: bool) TuiWriter {
@@ -483,6 +490,7 @@ const TuiWriter = struct {
                 }
             },
             .script_start => |s| {
+                if (!self.verbose) return;
                 self.clearProgress();
                 w.print("  $ {s} [{s}]\n", .{ s.script, s.name }) catch {};
             },
@@ -525,6 +533,11 @@ const TuiWriter = struct {
         self.mutex.unlock();
         self.allocator.destroy(self);
     }
+
+    fn isVerboseFn(ptr: *anyopaque) bool {
+        const self: *TuiWriter = @ptrCast(@alignCast(ptr));
+        return self.verbose;
+    }
 };
 
 // ============================================================================
@@ -540,6 +553,7 @@ const TextWriter = struct {
         .emit = emit,
         .flush = flush,
         .deinit = deinitFn,
+        .is_verbose = isVerboseFn,
     };
 
     fn init(allocator: std.mem.Allocator, verbose: bool) TextWriter {
@@ -589,7 +603,9 @@ const TextWriter = struct {
             .cache_hit => |p| {
                 if (self.verbose) w.print("[cache] hit {s}@{s}\n", .{ p.name, p.version }) catch {};
             },
-            .script_start => |s| w.print("[script] {s}: {s}\n", .{ s.name, s.script }) catch {},
+            .script_start => |s| {
+                if (self.verbose) w.print("[script] {s}: {s}\n", .{ s.name, s.script }) catch {};
+            },
             .script_output => |s| {
                 if (s.stdout.len > 0) w.print("{s}", .{s.stdout}) catch {};
                 if (s.stderr.len > 0) w.print("{s}", .{s.stderr}) catch {};
@@ -606,6 +622,11 @@ const TextWriter = struct {
         const self: *TextWriter = @ptrCast(@alignCast(ptr));
         self.allocator.destroy(self);
     }
+
+    fn isVerboseFn(ptr: *anyopaque) bool {
+        const self: *TextWriter = @ptrCast(@alignCast(ptr));
+        return self.verbose;
+    }
 };
 
 // ============================================================================
@@ -621,6 +642,7 @@ const JsonWriter = struct {
         .emit = emit,
         .flush = flush,
         .deinit = deinitFn,
+        .is_verbose = isVerboseFn,
     };
 
     fn init(allocator: std.mem.Allocator, verbose: bool) JsonWriter {
@@ -677,10 +699,12 @@ const JsonWriter = struct {
                     .{ jsonStr(p.name), jsonStr(p.version) },
                 ) catch {};
             },
-            .script_start => |s| w.print(
-                "{{\"type\":\"script_start\",\"name\":{s},\"script\":{s}}}\n",
-                .{ jsonStr(s.name), jsonStr(s.script) },
-            ) catch {},
+            .script_start => |s| {
+                if (self.verbose) w.print(
+                    "{{\"type\":\"script_start\",\"name\":{s},\"script\":{s}}}\n",
+                    .{ jsonStr(s.name), jsonStr(s.script) },
+                ) catch {};
+            },
             .script_output => |s| w.print(
                 "{{\"type\":\"script_output\",\"name\":{s},\"stdout\":{s},\"stderr\":{s}}}\n",
                 .{ jsonStr(s.name), jsonStr(s.stdout), jsonStr(s.stderr) },
@@ -696,6 +720,11 @@ const JsonWriter = struct {
     fn deinitFn(ptr: *anyopaque) void {
         const self: *JsonWriter = @ptrCast(@alignCast(ptr));
         self.allocator.destroy(self);
+    }
+
+    fn isVerboseFn(ptr: *anyopaque) bool {
+        const self: *JsonWriter = @ptrCast(@alignCast(ptr));
+        return self.verbose;
     }
 
     /// Wraps a string in JSON double-quotes. Does NOT escape interior chars -
