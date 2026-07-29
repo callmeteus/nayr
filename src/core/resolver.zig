@@ -460,7 +460,7 @@ pub fn resolve(
                     // machines.  Fall through and re-resolve from the original dep
                     // specifier (git URL, registry, etc.) so a portable entry is
                     // written on the next lockfile flush.
-                    const resolved_is_local = entry.resolved.len > 0 and entry.resolved[0] == '/';
+                    const resolved_is_local = lockfile_types.isLocalFilesystemPath(entry.resolved);
                     if (range_cache.satisfies(entry.version, effective_range) and !resolved_is_local) {
                         const map_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ req.name, entry.version });
 
@@ -1052,14 +1052,14 @@ const LockNameIndex = struct {
         const exact_key = std.fmt.allocPrint(range_cache.arena.allocator(), "{s}@{s}", .{ name, range }) catch return null;
         defer range_cache.arena.allocator().free(exact_key);
         if (lock.get(exact_key)) |entry| {
-            const resolved_is_local = entry.resolved.len > 0 and entry.resolved[0] == '/';
+            const resolved_is_local = lockfile_types.isLocalFilesystemPath(entry.resolved);
             if (!resolved_is_local and range_cache.satisfies(entry.version, range)) return entry;
         }
 
         const indices = self.by_name.get(name) orelse return null;
         for (indices.items) |idx| {
             const entry = &lock.entries[idx];
-            const resolved_is_local = entry.resolved.len > 0 and entry.resolved[0] == '/';
+            const resolved_is_local = lockfile_types.isLocalFilesystemPath(entry.resolved);
             if (resolved_is_local) continue;
             if (range_cache.satisfies(entry.version, range)) return entry;
         }
@@ -1151,6 +1151,7 @@ fn preloadLockfileEntries(
 ) !void {
     for (lock.entries) |*entry| {
         if (entry.patterns.len == 0) continue;
+        if (lockfile_types.isLocalFilesystemPath(entry.resolved)) continue;
         const name = patternPackageName(entry.patterns[0]) orelse continue;
         const map_key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ name, entry.version });
         errdefer allocator.free(map_key);
@@ -1448,6 +1449,7 @@ fn buildLockfile(
         // the original dep specifier (git URL, registry URL, etc.) and writes
         // a portable entry at that point.
         if (pkg.is_linked) continue;
+        if (lockfile_types.isLocalFilesystemPath(pkg.tarball_url)) continue;
 
         // Build patterns list: start with the canonical "name@version" pattern,
         // then append all collected request-range patterns.

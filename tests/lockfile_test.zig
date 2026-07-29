@@ -77,6 +77,16 @@ test "nayr format: round-trip" {
     );
 }
 
+test "local filesystem path detection" {
+    try std.testing.expect(lockfile_types.isLocalFilesystemPath("/home/dev/workspace/pkg"));
+    try std.testing.expect(lockfile_types.isLocalFilesystemPath("../lemon-shared"));
+    try std.testing.expect(lockfile_types.isLocalFilesystemPath("./vendor/pkg"));
+    try std.testing.expect(lockfile_types.isLocalFilesystemPath("C:\\workspace\\pkg"));
+    try std.testing.expect(!lockfile_types.isLocalFilesystemPath(""));
+    try std.testing.expect(!lockfile_types.isLocalFilesystemPath("https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"));
+    try std.testing.expect(!lockfile_types.isLocalFilesystemPath("git+https://github.com/even7hq/lemon-shared.git"));
+}
+
 test "lockfile pattern map lookup" {
     const allocator = std.testing.allocator;
 

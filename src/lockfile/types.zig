@@ -152,6 +152,17 @@ pub const Lockfile = struct {
     }
 };
 
+/// Returns true when `path` points at a local filesystem checkout.
+/// Machine-specific paths must never be written to or trusted from nayr.lock.
+pub fn isLocalFilesystemPath(path: []const u8) bool {
+    if (path.len == 0) return false;
+    if (path[0] == '/') return true;
+    if (std.mem.startsWith(u8, path, "./")) return true;
+    if (std.mem.startsWith(u8, path, "../")) return true;
+    if (path.len >= 2 and path[1] == ':') return true;
+    return false;
+}
+
 fn lockfileEntryEqual(a: *const LockfileEntry, b: *const LockfileEntry) bool {
     if (!std.mem.eql(u8, a.version, b.version)) return false;
     if (!std.mem.eql(u8, a.resolved, b.resolved)) return false;
