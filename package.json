@@ -1,7 +1,7 @@
 {
   "name": "nayr",
   "description": "Fast, lock-free Node.js package manager - drop-in replacement for Yarn Classic v1. Written in Zig.",
-  "version": "2.0.0-beta.28",
+  "version": "2.0.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -30,7 +30,6 @@
     "ci": "sh tests/run.sh ci",
     "lint": "sh scripts/lint.sh",
     "lint:fix": "zig fmt src tests build.zig tests.zig",
-    "deploy": "npm login && npm publish --tag latest",
-    "deploy:beta": "npm login && npm publish --tag beta"
+    "deploy": "npm login && npm publish --tag latest"
   }
 }
