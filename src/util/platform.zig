@@ -163,6 +163,18 @@ pub fn getYarnLinksDir(allocator: std.mem.Allocator) ![]const u8 {
     return path;
 }
 
+/// Returns true when `path` points inside a `node_modules` directory.
+///
+/// Registering or linking such paths creates self-referential symlink loops.
+pub fn isNodeModulesPath(path: []const u8) bool {
+    const sep: u8 = if (builtin.os.tag == .windows) '\\' else '/';
+    const needle = if (builtin.os.tag == .windows) "\\node_modules\\" else "/node_modules/";
+    if (std.mem.indexOf(u8, path, needle) != null) return true;
+    // Also catch paths ending in /node_modules or @scope/pkg directly under node_modules root.
+    if (std.mem.endsWith(u8, path, if (sep == '\\') "\\node_modules" else "/node_modules")) return true;
+    return false;
+}
+
 /// Reads a symlink and resolves its target to an absolute path.
 ///
 /// Yarn stores relative targets; this function returns the resolved absolute

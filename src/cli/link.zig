@@ -137,6 +137,60 @@ pub fn runAutolink(
 }
 
 // ============================================================================
+// Install-time registry repair
+// ============================================================================
+
+const SanitizeCtx = struct {
+    links_dir: []const u8,
+    writer: output.Writer,
+};
+
+fn sanitizeLinksCb(
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    target: []const u8,
+    user_data: *anyopaque,
+) !void {
+    if (!platform.isNodeModulesPath(target)) return;
+
+    const ctx: *SanitizeCtx = @alignCast(@ptrCast(user_data));
+
+    const link_path = try std.fs.path.join(allocator, &.{ ctx.links_dir, name });
+    defer allocator.free(link_path);
+
+    std.fs.deleteFileAbsolute(link_path) catch {};
+    std.fs.deleteTreeAbsolute(link_path) catch {};
+
+    const msg = try std.fmt.allocPrint(
+        allocator,
+        "removed invalid link registration: {s} (target was inside node_modules)",
+        .{name},
+    );
+    defer allocator.free(msg);
+    ctx.writer.emit(.{ .info = msg });
+}
+
+/// Removes global link registry entries whose target lives inside `node_modules`.
+///
+/// Corrupted entries (often imported from a stale Yarn link) create
+/// self-referential symlink loops. Called at the start of every install so
+/// `nayr` self-heals without a manual `nayr unlink`.
+///
+/// ## Parameters
+/// - `allocator` Scratch allocator for temporary paths and messages.
+/// - `writer` Output event sink.
+pub fn sanitizeLinksRegistry(
+    allocator: std.mem.Allocator,
+    writer: output.Writer,
+) !void {
+    const links_dir = try platform.getLinksDir(allocator);
+    defer allocator.free(links_dir);
+
+    var ctx = SanitizeCtx{ .links_dir = links_dir, .writer = writer };
+    try walkLinksDir(allocator, links_dir, @ptrCast(&ctx), sanitizeLinksCb);
+}
+
+// ============================================================================
 // Install-time relink helper
 // ============================================================================
 
@@ -279,6 +333,17 @@ fn registerNamedPackage(
     links_dir: []const u8,
     writer: output.Writer,
 ) !void {
+    if (platform.isNodeModulesPath(cwd)) {
+        const msg = try std.fmt.allocPrint(
+            allocator,
+            "refusing to register {s}: path is inside node_modules ({s})",
+            .{ name, cwd },
+        );
+        defer allocator.free(msg);
+        writer.emit(.{ .warning = msg });
+        return;
+    }
+
     // For scoped packages, ensure the scope directory exists.
     if (name[0] == '@') {
         const slash = std.mem.indexOfScalar(u8, name, '/') orelse return error.InvalidPackageName;
@@ -336,6 +401,27 @@ fn linkPackageIntoNodeModules(
         }
     }
 
+    const target = platform.readSymlinkAbsolute(allocator, link_src) catch {
+        const emsg = try std.fmt.allocPrint(allocator, "no link registered for: {s}", .{name});
+        defer allocator.free(emsg);
+        writer.emit(.{ .err = emsg });
+        return;
+    };
+    defer allocator.free(target);
+
+    if (platform.isNodeModulesPath(target)) {
+        std.fs.deleteFileAbsolute(link_src) catch {};
+        std.fs.deleteTreeAbsolute(link_src) catch {};
+        const msg = try std.fmt.allocPrint(
+            allocator,
+            "removed invalid link registration: {s} (target was inside node_modules)",
+            .{name},
+        );
+        defer allocator.free(msg);
+        writer.emit(.{ .info = msg });
+        return;
+    }
+
     const node_modules = try std.fs.path.join(allocator, &.{ cwd, "node_modules" });
     defer allocator.free(node_modules);
     try fs_util.mkdirAllRecursive(allocator, node_modules);
@@ -351,7 +437,7 @@ fn linkPackageIntoNodeModules(
     defer allocator.free(dest);
 
     std.fs.deleteTreeAbsolute(dest) catch {};
-    try platform.symlinkOrJunction(link_src, dest);
+    try platform.symlinkOrJunction(target, dest);
 
     const link_msg = if (imported_from_yarn)
         try std.fmt.allocPrint(allocator, "linked: {s}  (inherited from yarn - registered in nayr)", .{name})
@@ -381,6 +467,8 @@ fn importFromYarn(
 
     const target = platform.readSymlinkAbsolute(allocator, yarn_link) catch return false;
     defer allocator.free(target);
+
+    if (platform.isNodeModulesPath(target)) return false;
 
     // Ensure scope dir exists inside nayr's links dir.
     if (name[0] == '@') {

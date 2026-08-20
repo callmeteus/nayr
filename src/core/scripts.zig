@@ -83,10 +83,9 @@ pub fn runAll(
             }
         }
 
-        // Git dependencies: optionally run `prepare` (or `build` as fallback)
-        // to compile the package. Controlled by `build_git_deps` (from config
-        // `[git] build-deps = true` or env `NAYR_GIT_BUILD_DEPS=1`).
-        if (build_git_deps and hp.pkg.is_git) {
+        // Git dependencies: run `prepare` (or `build` as fallback) when explicitly
+        // enabled via config, or when the clone is missing build artifacts (no dist/).
+        if (hp.pkg.is_git and gitDepNeedsBuild(allocator, pkg_dir, &manifest, build_git_deps)) {
             const prepare_script = manifest.scripts.get("prepare");
             const build_script = manifest.scripts.get("build");
             if (prepare_script orelse build_script) |script_cmd| {
@@ -199,6 +198,37 @@ const root_post_scripts = [_][]const u8{
     "postinstall",
     "prepare",
 };
+
+/// Returns true when a git dependency clone should run its build/prepare script.
+///
+/// Builds when `[git] build-deps = true` / `NAYR_GIT_BUILD_DEPS=1`, or when the
+/// clone has a build/prepare script but no `dist/` directory (typical for git
+/// deps that only publish compiled output on npm, not in the repo root).
+///
+/// ## Parameters
+/// - `allocator` Scratch allocator for path joins.
+/// - `pkg_dir` Absolute path to the installed git dependency directory.
+/// - `manifest` Parsed package.json of the git dependency.
+/// - `build_git_deps` Whether git build-deps is enabled in config/env.
+/// ## Returns
+/// True when a prepare/build script should run for this git dependency.
+fn gitDepNeedsBuild(
+    allocator: std.mem.Allocator,
+    pkg_dir: []const u8,
+    manifest: *const json_util.PackageJson,
+    build_git_deps: bool,
+) bool {
+    const has_build = manifest.scripts.get("prepare") != null or manifest.scripts.get("build") != null;
+    if (!has_build) return false;
+    if (build_git_deps) return true;
+
+    const dist_path = std.fs.path.join(allocator, &.{ pkg_dir, "dist" }) catch return true;
+    defer allocator.free(dist_path);
+
+    var dist_dir = std.fs.openDirAbsolute(dist_path, .{}) catch return true;
+    dist_dir.close();
+    return false;
+}
 
 /// Installs a git dependency's own `node_modules` by running the current nayr
 /// binary with `install --ignore-scripts` inside `pkg_dir`.

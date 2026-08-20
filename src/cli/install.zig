@@ -123,6 +123,10 @@ pub fn run(
         }
     }
 
+    // Drop registry entries that point inside node_modules (self-referential loops).
+    // Runs before relink so a single `nayr` self-heals corrupted global links.
+    link_cmd.sanitizeLinksRegistry(allocator, writer) catch {};
+
     // Pre-install relink: apply any registered links for deps in this project.
     //
     // This runs before the integrity fast-path so that a link registered by a

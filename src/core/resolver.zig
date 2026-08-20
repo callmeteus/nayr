@@ -928,6 +928,10 @@ fn walkLinksIntoMap(
             const full = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
             defer allocator.free(full);
             const target = platform.readSymlinkAbsolute(allocator, full) catch continue;
+            if (platform.isNodeModulesPath(target)) {
+                allocator.free(target);
+                continue;
+            }
             const name_owned = try allocator.dupe(u8, entry.name);
             try map.put(allocator, name_owned, target);
         } else if (entry.kind == .directory and entry.name[0] == '@') {
@@ -949,6 +953,11 @@ fn walkLinksIntoMap(
                     allocator.free(scoped);
                     continue;
                 };
+                if (platform.isNodeModulesPath(target)) {
+                    allocator.free(scoped);
+                    allocator.free(target);
+                    continue;
+                }
                 try map.put(allocator, scoped, target);
             }
         }
