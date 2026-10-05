@@ -565,7 +565,7 @@ fn removeExtraneous(
                     std.fs.deleteTreeAbsolute(sub_path) catch {};
                     const msg = try std.fmt.allocPrint(allocator, "removed extraneous: {s}", .{full_name});
                     defer allocator.free(msg);
-                    writer.emit(.{ .info = msg });
+                    writer.emit(.{ .debug = msg });
                 }
             }
             continue;
@@ -577,7 +577,7 @@ fn removeExtraneous(
             std.fs.deleteTreeAbsolute(pkg_path) catch {};
             const msg = try std.fmt.allocPrint(allocator, "removed extraneous: {s}", .{pkg_name});
             defer allocator.free(msg);
-            writer.emit(.{ .info = msg });
+            writer.emit(.{ .debug = msg });
         }
     }
 }

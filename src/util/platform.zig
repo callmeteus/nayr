@@ -393,7 +393,7 @@ pub fn runScriptWithArgs(
     // so that any `yarn` call inside scripts is transparently handled by nayr.
     var env_map = try std.process.getEnvMap(allocator);
     defer env_map.deinit();
-    const new_path = try scripts.buildScriptPath(allocator, cwd);
+    const new_path = try scripts.buildScriptPath(allocator, cwd, cwd);
     defer allocator.free(new_path);
     try env_map.put("PATH", new_path);
     child.env_map = &env_map;

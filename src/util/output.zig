@@ -84,6 +84,9 @@ pub const Event = union(enum) {
     /// Informational message shown to the user.
     info: []const u8,
 
+    /// Verbose-only diagnostic (shown with --verbose).
+    debug: []const u8,
+
     /// Non-fatal warning.
     warning: []const u8,
 
@@ -435,6 +438,15 @@ const TuiWriter = struct {
                     msg,
                 }) catch {};
             },
+            .debug => |msg| {
+                if (!self.verbose) return;
+                self.clearProgress();
+                w.print("{s}  debug{s}  {s}\n", .{
+                    if (self.colour) "\x1b[2m" else "",
+                    if (self.colour) "\x1b[0m" else "",
+                    msg,
+                }) catch {};
+            },
             .warning => |msg| {
                 self.clearProgress();
                 w.print("{s}  warn{s}  {s}\n", .{
@@ -579,6 +591,9 @@ const TextWriter = struct {
                 if (self.verbose) w.print("[link] {d}/{d} packages\n", .{ p.linked, p.total }) catch {};
             },
             .info => |msg| w.print("[info] {s}\n", .{msg}) catch {},
+            .debug => |msg| {
+                if (self.verbose) w.print("[debug] {s}\n", .{msg}) catch {};
+            },
             .warning => |msg| w.print("[warn] {s}\n", .{msg}) catch {},
             .err => |msg| std.io.getStdErr().writer().print("[error] {s}\n", .{msg}) catch {},
             .done => |d| {
@@ -666,6 +681,9 @@ const JsonWriter = struct {
                 .{ p.linked, p.total },
             ) catch {},
             .info => |msg| w.print("{{\"type\":\"info\",\"message\":{s}}}\n", .{jsonStr(msg)}) catch {},
+            .debug => |msg| {
+                if (self.verbose) w.print("{{\"type\":\"debug\",\"message\":{s}}}\n", .{jsonStr(msg)}) catch {};
+            },
             .warning => |msg| w.print("{{\"type\":\"warning\",\"message\":{s}}}\n", .{jsonStr(msg)}) catch {},
             .err => |msg| std.io.getStdErr().writer().print(
                 "{{\"type\":\"error\",\"message\":{s}}}\n",

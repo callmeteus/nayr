@@ -359,9 +359,6 @@ fn registerNamedPackage(
     if (platform.readSymlinkAbsolute(allocator, link_path)) |existing| {
         defer allocator.free(existing);
         if (std.mem.eql(u8, existing, cwd)) {
-            const msg = try std.fmt.allocPrint(allocator, "already registered: {s} → {s}", .{ name, cwd });
-            defer allocator.free(msg);
-            writer.emit(.{ .info = msg });
             return;
         }
     } else |_| {}

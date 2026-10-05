@@ -46,12 +46,6 @@ pub fn runAll(
     build_git_deps: bool,
     writer: output.Writer,
 ) !void {
-    // Build the augmented PATH once (reused for every script in this run).
-    // npm/yarn prepend node_modules/.bin directories so that lifecycle scripts
-    // can call binaries installed as dependencies without a full path.
-    const augmented_path = buildScriptPath(allocator, root_dir) catch null;
-    defer if (augmented_path) |p| allocator.free(p);
-
     for (hoisted) |hp| {
         if (hp.pkg.is_workspace) continue; // workspace scripts are run by the user
 
@@ -63,6 +57,11 @@ pub fn runAll(
 
         var manifest = json_util.parseFile(allocator, manifest_path) catch continue;
         defer manifest.deinit(allocator);
+
+        // npm/yarn prepend node_modules/.bin and npm's bundled node-gyp for
+        // each package's script cwd (see buildScriptPath).
+        const augmented_path = buildScriptPath(allocator, root_dir, pkg_dir) catch null;
+        defer if (augmented_path) |p| allocator.free(p);
 
         for (lifecycle_scripts) |script_name| {
             if (manifest.scripts.get(script_name)) |script_cmd| {
@@ -164,7 +163,7 @@ fn runRootScripts(
 
     const pkg_name = manifest.name orelse "project";
 
-    const augmented_path = buildScriptPath(allocator, root_dir) catch null;
+    const augmented_path = buildScriptPath(allocator, root_dir, root_dir) catch null;
     defer if (augmented_path) |p| allocator.free(p);
 
     for (script_names) |script_name| {
@@ -396,35 +395,148 @@ fn runScript(
     };
 }
 
-/// Returns a PATH string with `node_modules/.bin` and the nayr shim
-/// directory prepended, following npm's convention for lifecycle script
-/// environments.
+/// Returns a PATH string for lifecycle scripts, mirroring Yarn Classic.
 ///
-/// Prepended directories (in order):
-///   1. `~/.nayr/shims`              - yarn → nayr shim (and future shims)
-///   2. `{root}/node_modules/.bin`   - hoisted / root-level executables
+/// Prepended directories (highest priority first):
+///   1. `~/.nayr/shims`
+///   2. `{script_cwd}/node_modules/.bin`
+///   3. `{root_dir}/node_modules/.bin`
+///   4. Node's bundled `npm/.../node-gyp-bin` (when `node` is on PATH)
+///   5. Existing process `PATH`
 ///
 /// The caller owns the returned slice.
-pub fn buildScriptPath(allocator: std.mem.Allocator, root_dir: []const u8) ![]const u8 {
-    const root_bin = try std.fs.path.join(allocator, &.{ root_dir, "node_modules", ".bin" });
-    defer allocator.free(root_bin);
+pub fn buildScriptPath(
+    allocator: std.mem.Allocator,
+    root_dir: []const u8,
+    script_cwd: []const u8,
+) ![]const u8 {
+    var segments = std.ArrayList([]const u8).init(allocator);
+    defer {
+        for (segments.items) |s| allocator.free(s);
+        segments.deinit();
+    }
 
-    const shim_dir = ensureYarnShim(allocator) catch null;
-    defer if (shim_dir) |d| allocator.free(d);
+    if (ensureYarnShim(allocator)) |shim_dir| {
+        defer allocator.free(shim_dir);
+        try segments.append(try allocator.dupe(u8, shim_dir));
+    } else |_| {}
 
-    const sep = if (@import("builtin").os.tag == .windows) ";" else ":";
+    try appendLifecycleBinDirs(allocator, &segments, root_dir, script_cwd);
+
+    if (resolveNodeExecutable(allocator)) |node_exec| {
+        defer allocator.free(node_exec);
+        try appendNodeGypBinDirs(allocator, &segments, node_exec);
+    }
+
     const existing = std.process.getEnvVarOwned(allocator, "PATH") catch "";
     defer if (existing.len > 0) allocator.free(existing);
 
-    // Build: [shim_dir:]root_bin[:existing]
-    if (shim_dir) |d| {
-        if (existing.len == 0) {
-            return std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ d, sep, root_bin });
+    return joinPathSegments(allocator, segments.items, existing);
+}
+
+/// Joins PATH segments with the platform delimiter.
+fn joinPathSegments(
+    allocator: std.mem.Allocator,
+    prepend: []const []const u8,
+    existing: []const u8,
+) ![]const u8 {
+    const delim = std.fs.path.delimiter;
+    var total: usize = 0;
+    for (prepend) |s| total += s.len + 1;
+    if (existing.len > 0) total += existing.len;
+
+    if (total == 0) return allocator.dupe(u8, "");
+
+    var buf = try allocator.alloc(u8, total);
+    var off: usize = 0;
+    for (prepend, 0..) |s, i| {
+        if (i > 0) {
+            buf[off] = delim;
+            off += 1;
         }
-        return std.fmt.allocPrint(allocator, "{s}{s}{s}{s}{s}", .{ d, sep, root_bin, sep, existing });
+        @memcpy(buf[off..][0..s.len], s);
+        off += s.len;
     }
-    if (existing.len == 0) return allocator.dupe(u8, root_bin);
-    return std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ root_bin, sep, existing });
+    if (existing.len > 0) {
+        if (prepend.len > 0) {
+            buf[off] = delim;
+            off += 1;
+        }
+        @memcpy(buf[off..][0..existing.len], existing);
+        off += existing.len;
+    }
+    return allocator.realloc(buf, off);
+}
+
+/// Prepends package-local and root `node_modules/.bin` directories.
+fn appendLifecycleBinDirs(
+    allocator: std.mem.Allocator,
+    segments: *std.ArrayList([]const u8),
+    root_dir: []const u8,
+    script_cwd: []const u8,
+) !void {
+    const local_bin = try std.fs.path.join(allocator, &.{ script_cwd, "node_modules", ".bin" });
+    defer allocator.free(local_bin);
+    try segments.append(try allocator.dupe(u8, local_bin));
+
+    const root_bin = try std.fs.path.join(allocator, &.{ root_dir, "node_modules", ".bin" });
+    defer allocator.free(root_bin);
+    if (!std.mem.eql(u8, local_bin, root_bin)) {
+        try segments.append(try allocator.dupe(u8, root_bin));
+    }
+}
+
+/// Prepends npm's bundled `node-gyp` shim directories (same paths as Yarn 1.x).
+fn appendNodeGypBinDirs(
+    allocator: std.mem.Allocator,
+    segments: *std.ArrayList([]const u8),
+    node_exec: []const u8,
+) !void {
+    const node_bin = std.fs.path.dirname(node_exec) orelse return;
+
+    const rel_paths = [_][]const []const u8{
+        &.{ node_bin, "..", "lib", "node_modules", "npm", "bin", "node-gyp-bin" },
+        &.{ node_bin, "node_modules", "npm", "bin", "node-gyp-bin" },
+        &.{ node_bin, "..", "libexec", "lib", "node_modules", "npm", "bin", "node-gyp-bin" },
+    };
+
+    for (rel_paths) |rel| {
+        const dir = std.fs.path.resolve(allocator, rel) catch continue;
+        defer allocator.free(dir);
+        std.fs.accessAbsolute(dir, .{}) catch continue;
+        try segments.append(try allocator.dupe(u8, dir));
+    }
+}
+
+/// Locates the `node` binary used for lifecycle scripts.
+///
+/// Checks `npm_node_execpath`, then `NODE`, then walks `PATH`.
+/// Caller owns the returned slice.
+fn resolveNodeExecutable(allocator: std.mem.Allocator) ?[]const u8 {
+    if (std.process.getEnvVarOwned(allocator, "npm_node_execpath")) |p| {
+        return p;
+    } else |_| {}
+    if (std.process.getEnvVarOwned(allocator, "NODE")) |p| {
+        return p;
+    } else |_| {}
+
+    const path_env = std.process.getEnvVarOwned(allocator, "PATH") catch return null;
+    defer allocator.free(path_env);
+
+    const is_windows = @import("builtin").os.tag == .windows;
+    const exe_name = if (is_windows) "node.exe" else "node";
+
+    var it = std.mem.splitScalar(u8, path_env, std.fs.path.delimiter);
+    while (it.next()) |segment| {
+        if (segment.len == 0) continue;
+        const candidate = std.fs.path.join(allocator, &.{ segment, exe_name }) catch continue;
+        std.fs.accessAbsolute(candidate, .{}) catch {
+            allocator.free(candidate);
+            continue;
+        };
+        return candidate;
+    }
+    return null;
 }
 
 /// Ensures a `yarn` shim exists inside `~/.nayr/shims/` (Unix) or

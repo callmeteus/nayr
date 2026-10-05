@@ -12,4 +12,5 @@ comptime {
     _ = @import("tests/lockfile_test.zig");
     _ = @import("tests/resolver_test.zig");
     _ = @import("tests/hoister_test.zig");
+    _ = @import("tests/scripts_test.zig");
 }
