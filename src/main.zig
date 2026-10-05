@@ -42,7 +42,7 @@ pub fn main() !void {
 
         if (err == error.FileNotFound) {
             if (IoTrace.takeMissingPath()) |p| {
-                stderr.print("{s}error{s} File not found: {s}\n", .{ red_bold, reset, p }) catch {};
+                stderr.print("{s}error{s} file not found: {s}\n", .{ red_bold, reset, p }) catch {};
             } else {
                 printFileNotFoundWithoutPath(stderr, allocator, red_bold, reset);
             }
@@ -51,17 +51,17 @@ pub fn main() !void {
 
         const msg = switch (err) {
             error.NotYarnV1Lockfile => "yarn.lock found but it is not a Yarn v1 lockfile (Yarn Berry / PnP is not supported).",
-            error.FrozenLockfileChanged => "Lockfile would need to be updated but frozen mode is on. Omit --frozen-lockfile, pass --no-frozen-lockfile, or fix the lockfile.",
-            error.NetworkError => "Network request failed. Check your internet connection and registry URL.\n       (hint: run with --verbose for more details)",
-            error.HttpError => "Registry returned an HTTP error. Common causes: wrong registry URL, missing auth token, or package does not exist.",
+            error.FrozenLockfileChanged => "lockfile would need to be updated but frozen mode is on. Omit --frozen-lockfile, pass --no-frozen-lockfile, or fix the lockfile.",
+            error.NetworkError => "network request failed. Check your internet connection and registry URL.\n       (hint: run with --verbose for more details)",
+            error.HttpError => "registry returned an HTTP error. Common causes: wrong registry URL, missing auth token, or package does not exist.",
             error.RegistryError => null, // detailed message already emitted by the resolver; fall through to errorName
-            error.MissingName, error.InvalidMetadata => "Registry returned an unexpected or malformed response for a package.\n       The package may not exist, the registry URL may be wrong, or auth may be required.",
-            error.NoMatchingVersion => "No version of a required package satisfies the requested range - see the warning above.",
-            error.GitHostNotAllowed => "A git dependency was blocked by the allowed-git-hosts policy in your .nayrrc.",
-            error.RegistryNotAllowed => "A package registry was blocked by the allowed-registries policy in your .nayrrc.",
-            error.PackageTooNew => "A package version was blocked by the minimum-package-age policy in your .nayrrc.",
-            error.OutOfMemory => "Out of memory.",
-            error.AccessDenied => "Permission denied. Check file/directory permissions.",
+            error.MissingName, error.InvalidMetadata => "registry returned an unexpected or malformed response for a package.\n       the package may not exist, the registry URL may be wrong, or auth may be required.",
+            error.NoMatchingVersion => "no version of a required package satisfies the requested range - see the warning above.",
+            error.GitHostNotAllowed => "a git dependency was blocked by the allowed-git-hosts policy in your .nayrrc.",
+            error.RegistryNotAllowed => "a package registry was blocked by the allowed-registries policy in your .nayrrc.",
+            error.PackageTooNew => "a package version was blocked by the minimum-package-age policy in your .nayrrc.",
+            error.OutOfMemory => "out of memory.",
+            error.AccessDenied => "permission denied. Check file/directory permissions.",
             error.InvalidCharacter, error.UnexpectedEndOfInput => "package.json contains invalid JSON. Fix the syntax and try again.",
             else => null,
         };
@@ -96,16 +96,16 @@ fn printFileNotFoundWithoutPath(
     defer if (cwd_opt) |c| allocator.free(c);
     if (cwd_opt) |cwd| {
         const pj = std.fs.path.join(allocator, &.{ cwd, "package.json" }) catch {
-            stderr.print("{s}error{s} File not found (path not recorded). cwd={s}. Pass --cwd <project root>.\n", .{ red_bold, reset, cwd }) catch {};
+            stderr.print("{s}error{s} file not found (path not recorded). cwd={s}. Pass --cwd <project root>.\n", .{ red_bold, reset, cwd }) catch {};
             return;
         };
         defer allocator.free(pj);
         const pj_status: []const u8 = if (std.fs.accessAbsolute(pj, .{})) |_| "present" else |_| "missing";
         stderr.print(
-            "{s}error{s} File not found (path not recorded). cwd={s}; package.json at {s}: {s}. Try `nayr --cwd <repo>` or fix Docker WORKDIR/COPY.\n",
+            "{s}error{s} file not found (path not recorded). cwd={s}; package.json at {s}: {s}. Try `nayr --cwd <repo>` or fix Docker WORKDIR/COPY.\n",
             .{ red_bold, reset, cwd, pj, pj_status },
         ) catch {};
         return;
     }
-    stderr.print("{s}error{s} File not found (path not recorded). Could not read cwd. Pass --cwd <project root>.\n", .{ red_bold, reset }) catch {};
+    stderr.print("{s}error{s} file not found (path not recorded). Could not read cwd. Pass --cwd <project root>.\n", .{ red_bold, reset }) catch {};
 }

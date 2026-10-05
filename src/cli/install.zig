@@ -166,7 +166,7 @@ pub fn run(
             }
             writer.emit(.{ .done = .{
                 .elapsed_ms = @intCast(std.time.milliTimestamp() - start),
-                .summary = "Already up to date.",
+                .summary = "already up to date.",
             } });
             return;
         }
@@ -191,7 +191,7 @@ pub fn run(
     // Print resolved summary (also clears the spinner line).
     {
         const n = resolution.packages.count();
-        const msg = try std.fmt.allocPrint(allocator, "Resolved {d} package{s}", .{
+        const msg = try std.fmt.allocPrint(allocator, "resolved {d} package{s}", .{
             n, if (n == 1) "" else "s",
         });
         defer allocator.free(msg);
@@ -204,7 +204,7 @@ pub fn run(
     var cache = try cache_mod.Cache.init(allocator, cache_dir);
     defer cache.deinit();
 
-    writer.emit(.{ .info = "Fetching packages..." });
+    writer.emit(.{ .info = "fetching packages..." });
     try fetcher_mod.fetchAll(
         allocator,
         &resolution.packages,
@@ -285,7 +285,7 @@ pub fn run(
     }
 
     // --- Phase 4: Link ---
-    writer.emit(.{ .info = "Linking packages..." });
+    writer.emit(.{ .info = "linking packages..." });
     // With --skip-links, build a filtered slice that excludes nayr-linked and
     // git-based packages so offline / intranet-free installs succeed.
     const link_hoisted = if (opts.skip_links) blk: {
@@ -303,7 +303,7 @@ pub fn run(
 
     // --- Phase 5: Scripts ---
     if (!opts.ignore_scripts and !config.ignore_scripts) {
-        writer.emit(.{ .info = "Running lifecycle scripts..." });
+        writer.emit(.{ .info = "running lifecycle scripts..." });
         try scripts_mod.runAll(allocator, cwd, link_hoisted, config.git_build_deps, writer);
         try scripts_mod.runRootPost(allocator, cwd, writer);
     }

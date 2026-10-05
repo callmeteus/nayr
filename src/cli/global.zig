@@ -146,7 +146,7 @@ pub fn runAdd(
 
         writer.emit(.{ .info = try std.fmt.allocPrint(
             la,
-            "Adding {s}@{s} to global {s}",
+            "adding {s}@{s} to global {s}",
             .{ name, range, dep_key },
         ) });
 
@@ -216,7 +216,7 @@ pub fn runRemove(
         }
         writer.emit(.{ .info = try std.fmt.allocPrint(
             allocator,
-            "Removing {s} from global packages",
+            "removing {s} from global packages",
             .{pkg_name},
         ) });
     }
@@ -262,7 +262,7 @@ fn runList(allocator: std.mem.Allocator, writer: output.Writer) !void {
 
     const raw = blk: {
         const f = std.fs.openFileAbsolute(pkg_path, .{}) catch {
-            writer.emit(.{ .info = "No global packages installed." });
+            writer.emit(.{ .info = "no global packages installed." });
             return;
         };
         defer f.close();
@@ -282,7 +282,7 @@ fn runList(allocator: std.mem.Allocator, writer: output.Writer) !void {
         break :blk n;
     };
     if (total == 0) {
-        writer.emit(.{ .info = "No global packages installed." });
+        writer.emit(.{ .info = "no global packages installed." });
         return;
     }
 
@@ -470,7 +470,7 @@ fn checkPath(
             // Already in the rc file but not yet active - just remind once.
             writer.emit(.{ .info = try std.fmt.allocPrint(
                 a,
-                "Run `source {s}` or open a new terminal to use global binaries.",
+                "run `source {s}` or open a new terminal to use global binaries.",
                 .{rc},
             ) });
         } else {
@@ -491,12 +491,12 @@ fn checkPath(
 
             writer.emit(.{ .info = try std.fmt.allocPrint(
                 a,
-                "Added {s} to PATH in {s}",
+                "added {s} to PATH in {s}",
                 .{ bin_dir, rc },
             ) });
             writer.emit(.{ .info = try std.fmt.allocPrint(
                 a,
-                "Run `source {s}` or open a new terminal to apply.",
+                "run `source {s}` or open a new terminal to apply.",
                 .{rc},
             ) });
         }
@@ -526,7 +526,7 @@ fn resolveRcFile(a: std.mem.Allocator) ![]const u8 {
 fn fallbackPathWarning(writer: output.Writer, a: std.mem.Allocator, bin_dir: []const u8) void {
     writer.emit(.{ .warning = std.fmt.allocPrint(
         a,
-        "Add {s} to your PATH manually:\n       export PATH=\"{s}:$PATH\"",
+        "add {s} to your PATH manually:\n       export PATH=\"{s}:$PATH\"",
         .{ bin_dir, bin_dir },
     ) catch bin_dir });
 }

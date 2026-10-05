@@ -590,12 +590,19 @@ const TextWriter = struct {
             .link_progress => |p| {
                 if (self.verbose) w.print("[link] {d}/{d} packages\n", .{ p.linked, p.total }) catch {};
             },
-            .info => |msg| w.print("[info] {s}\n", .{msg}) catch {},
-            .debug => |msg| {
-                if (self.verbose) w.print("[debug] {s}\n", .{msg}) catch {};
+            .info => |msg| {
+                w.print("[info] {s}\n", .{msg}) catch {};
             },
-            .warning => |msg| w.print("[warn] {s}\n", .{msg}) catch {},
-            .err => |msg| std.io.getStdErr().writer().print("[error] {s}\n", .{msg}) catch {},
+            .debug => |msg| {
+                if (!self.verbose) return;
+                w.print("[debug] {s}\n", .{msg}) catch {};
+            },
+            .warning => |msg| {
+                w.print("[warn] {s}\n", .{msg}) catch {};
+            },
+            .err => |msg| {
+                std.io.getStdErr().writer().print("[error] {s}\n", .{msg}) catch {};
+            },
             .done => |d| {
                 const secs = @as(f64, @floatFromInt(d.elapsed_ms)) / 1000.0;
                 w.print("[done] {s} ({d:.2}s)\n", .{ d.summary, secs }) catch {};
@@ -680,19 +687,28 @@ const JsonWriter = struct {
                 "{{\"type\":\"link_progress\",\"linked\":{d},\"total\":{d}}}\n",
                 .{ p.linked, p.total },
             ) catch {},
-            .info => |msg| w.print("{{\"type\":\"info\",\"message\":{s}}}\n", .{jsonStr(msg)}) catch {},
-            .debug => |msg| {
-                if (self.verbose) w.print("{{\"type\":\"debug\",\"message\":{s}}}\n", .{jsonStr(msg)}) catch {};
+            .info => |msg| {
+                w.print("{{\"type\":\"info\",\"message\":{s}}}\n", .{jsonStr(msg)}) catch {};
             },
-            .warning => |msg| w.print("{{\"type\":\"warning\",\"message\":{s}}}\n", .{jsonStr(msg)}) catch {},
-            .err => |msg| std.io.getStdErr().writer().print(
-                "{{\"type\":\"error\",\"message\":{s}}}\n",
-                .{jsonStr(msg)},
-            ) catch {},
-            .done => |d| w.print(
-                "{{\"type\":\"done\",\"elapsed_ms\":{d},\"summary\":{s}}}\n",
-                .{ d.elapsed_ms, jsonStr(d.summary) },
-            ) catch {},
+            .debug => |msg| {
+                if (!self.verbose) return;
+                w.print("{{\"type\":\"debug\",\"message\":{s}}}\n", .{jsonStr(msg)}) catch {};
+            },
+            .warning => |msg| {
+                w.print("{{\"type\":\"warning\",\"message\":{s}}}\n", .{jsonStr(msg)}) catch {};
+            },
+            .err => |msg| {
+                std.io.getStdErr().writer().print(
+                    "{{\"type\":\"error\",\"message\":{s}}}\n",
+                    .{jsonStr(msg)},
+                ) catch {};
+            },
+            .done => |d| {
+                w.print(
+                    "{{\"type\":\"done\",\"elapsed_ms\":{d},\"summary\":{s}}}\n",
+                    .{ d.elapsed_ms, jsonStr(d.summary) },
+                ) catch {};
+            },
             .table_row => |row| {
                 w.print("{{\"type\":\"table_row\",\"columns\":[", .{}) catch {};
                 for (row.columns, 0..) |col, i| {

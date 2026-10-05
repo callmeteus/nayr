@@ -547,7 +547,7 @@ fn logCurlError(url: []const u8, exit_code: u8, curl_stderr: []const u8) void {
         }
         if (trimmed.len > 0) break :blk trimmed;
         // Fallback: describe by exit code.
-        break :blk if (exit_code == 22) "HTTP 4xx/5xx error" else "network error";
+        break :blk if (exit_code == 22) "http 4xx/5xx error" else "network error";
     };
 
     nayr_stderr.print(

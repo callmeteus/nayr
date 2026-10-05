@@ -156,7 +156,7 @@ fn fetchWorker(shared: *const SharedFetchState, parent_alloc: std.mem.Allocator)
         // Use a per-package temp path to avoid race conditions between threads
         // all writing to the same fixed temp file.
         const tmp_path = std.fmt.allocPrint(allocator, "{s}{c}nayr-dl-{d}-{x}.tmp", .{ shared.tmp_dir, std.fs.path.sep, idx, platform.uniqueId() }) catch {
-            shared.writer.emit(.{ .warning = "OutOfMemory" });
+            shared.writer.emit(.{ .warning = "out of memory" });
             _ = shared.done_count.fetchAdd(1, .release);
             continue;
         };

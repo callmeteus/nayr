@@ -33,6 +33,7 @@ const publish_cmd = @import("publish.zig");
 const global_cmd = @import("global.zig");
 const config_cmd = @import("config.zig");
 const update_notifier = @import("../util/update_notifier.zig");
+const scripts_mod = @import("../core/scripts.zig");
 
 /// nayr version string - embedded from package.json at build time.
 pub const VERSION = build_options.version;
@@ -103,6 +104,8 @@ pub fn run(allocator: std.mem.Allocator, args: []const []const u8) !void {
         try update_notifier.UpdateNotifier.runBackgroundCheck(allocator, running_version);
         return;
     }
+
+    scripts_mod.refreshRuntimeShims(allocator);
 
     if (args.len < 2) {
         var default_opts = defaultGlobalOpts(allocator);

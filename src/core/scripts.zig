@@ -395,6 +395,13 @@ fn runScript(
     };
 }
 
+/// Refreshes `~/.nayr/shims/yarn` and `~/.nayr/nayr-bin` for the binary
+/// currently running. Called at CLI startup so postinstall scripts never
+/// `exec` a stale path (e.g. deleted `zig-out/bin/nayr`).
+pub fn refreshRuntimeShims(allocator: std.mem.Allocator) void {
+    ensureYarnShim(allocator) catch {};
+}
+
 /// Returns a PATH string for lifecycle scripts, mirroring Yarn Classic.
 ///
 /// Prepended directories (highest priority first):
@@ -416,7 +423,9 @@ pub fn buildScriptPath(
         segments.deinit();
     }
 
-    if (ensureYarnShim(allocator)) |shim_dir| {
+    ensureYarnShim(allocator) catch {};
+
+    if (nayrShimsDirPath(allocator)) |shim_dir| {
         defer allocator.free(shim_dir);
         try segments.append(try allocator.dupe(u8, shim_dir));
     } else |_| {}
@@ -539,6 +548,80 @@ fn resolveNodeExecutable(allocator: std.mem.Allocator) ?[]const u8 {
     return null;
 }
 
+/// Unix `yarn` shim: resolve nayr at runtime (never bake in zig-out or other
+/// paths that disappear after rebuild). Order: `NAYR_BIN`, `command -v nayr`,
+/// then `~/.nayr/nayr-bin` (updated each time nayr runs).
+const yarn_shim_unix =
+    \\#!/bin/sh
+    \\if [ -n "${NAYR_BIN}" ] && [ -x "${NAYR_BIN}" ]; then
+    \\  exec "${NAYR_BIN}" "$@"
+    \\fi
+    \\if command -v nayr >/dev/null 2>&1; then
+    \\  exec nayr "$@"
+    \\fi
+    \\_home="${HOME:-}"
+    \\if [ -z "${_home}" ]; then _home=$(cd ~ && pwd); fi
+    \\if [ -x "${_home}/.nayr/nayr-bin" ]; then
+    \\  exec "${_home}/.nayr/nayr-bin" "$@"
+    \\fi
+    \\echo "nayr: yarn shim could not locate nayr binary" >&2
+    \\exit 127
+    \\
+;
+
+/// Windows `yarn.cmd` shim: `where nayr`, then `%USERPROFILE%\.nayr\nayr-bin.exe`.
+const yarn_shim_windows =
+    \\@echo off
+    \\setlocal
+    \\if defined NAYR_BIN if exist "%NAYR_BIN%" "%NAYR_BIN%" %* & exit /b %ERRORLEVEL%
+    \\for /f "delims=" %%i in ('where nayr 2^>nul') do (
+    \\  "%%i" %*
+    \\  exit /b %ERRORLEVEL%
+    \\)
+    \\if exist "%USERPROFILE%\.nayr\nayr-bin.exe" (
+    \\  "%USERPROFILE%\.nayr\nayr-bin.exe" %*
+    \\  exit /b %ERRORLEVEL%
+    \\)
+    \\echo nayr: yarn shim could not locate nayr binary >&2
+    \\exit /b 127
+    \\
+;
+
+/// Returns `~/.nayr/shims` (caller owns the slice).
+fn nayrShimsDirPath(allocator: std.mem.Allocator) ![]const u8 {
+    const is_windows = @import("builtin").os.tag == .windows;
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch
+        (if (is_windows)
+            try std.process.getEnvVarOwned(allocator, "USERPROFILE")
+        else
+            return error.NoHome);
+    defer allocator.free(home);
+    return std.fs.path.join(allocator, &.{ home, ".nayr", "shims" });
+}
+
+/// Refreshes `~/.nayr/nayr-bin` to point at the currently running nayr binary.
+/// Lifecycle scripts may run long after install started; a stale zig-out path
+/// must not be written into the yarn shim itself.
+fn refreshRuntimeNayrLink(allocator: std.mem.Allocator, nayr_home: []const u8) !void {
+    var self_buf: [4096]u8 = undefined;
+    const self_path = try std.fs.selfExePath(&self_buf);
+
+    const is_windows = @import("builtin").os.tag == .windows;
+    const link_name = if (is_windows) "nayr-bin.exe" else "nayr-bin";
+    const link_path = try std.fs.path.join(allocator, &.{ nayr_home, link_name });
+    defer allocator.free(link_path);
+
+    std.fs.deleteFileAbsolute(link_path) catch {};
+    std.fs.deleteTreeAbsolute(link_path) catch {};
+
+    if (is_windows) {
+        // Hardlink or copy: symlinks to .exe often need elevated rights on Windows.
+        try std.fs.CopyFileOptions.copyFile(self_path, link_path, .{});
+    } else {
+        try std.fs.symLinkAbsolute(self_path, link_path, .{});
+    }
+}
+
 /// Ensures a `yarn` shim exists inside `~/.nayr/shims/` (Unix) or
 /// `%USERPROFILE%\.nayr\shims\` (Windows) that delegates every call to the
 /// current nayr binary.
@@ -550,10 +633,9 @@ fn resolveNodeExecutable(allocator: std.mem.Allocator) ?[]const u8 {
 /// (e.g. `"build": "yarn build"` or `#!/usr/bin/env yarn`) transparently
 /// use nayr instead, without modifying any project file.
 ///
-/// Returns the shims directory path.  The caller owns the returned slice.
-/// Errors are silently ignored by the caller so scripts still run even if
+/// Errors are silently ignored by callers so scripts still run even if
 /// the shim cannot be created (e.g. read-only home directory).
-fn ensureYarnShim(allocator: std.mem.Allocator) ![]const u8 {
+fn ensureYarnShim(allocator: std.mem.Allocator) !void {
     const is_windows = @import("builtin").os.tag == .windows;
 
     // Prefer HOME; fall back to USERPROFILE on Windows.
@@ -564,52 +646,38 @@ fn ensureYarnShim(allocator: std.mem.Allocator) ![]const u8 {
             return error.NoHome);
     defer allocator.free(home);
 
-    const shim_dir = try std.fs.path.join(allocator, &.{ home, ".nayr", "shims" });
-    errdefer allocator.free(shim_dir);
+    const nayr_home = try std.fs.path.join(allocator, &.{ home, ".nayr" });
+    defer allocator.free(nayr_home);
+
+    std.fs.makeDirAbsolute(nayr_home) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+
+    refreshRuntimeNayrLink(allocator, nayr_home) catch {};
+
+    const shim_dir = try nayrShimsDirPath(allocator);
+    defer allocator.free(shim_dir);
 
     std.fs.makeDirAbsolute(shim_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
 
-    // Resolve the absolute path of the running nayr binary so the shim works
-    // even when nayr is not yet on PATH.
-    var self_buf: [4096]u8 = undefined;
-    const self_path = try std.fs.selfExePath(&self_buf);
-
     if (is_windows) {
-        // Windows: create yarn.cmd so cmd.exe finds it without an extension.
-        // `%*` forwards all arguments; quotes handle spaces in the path.
         const shim_path = try std.fs.path.join(allocator, &.{ shim_dir, "yarn.cmd" });
         defer allocator.free(shim_path);
 
-        const content = try std.fmt.allocPrint(
-            allocator,
-            "@echo off\r\n\"{s}\" %*\r\n",
-            .{self_path},
-        );
-        defer allocator.free(content);
-
         const file = try std.fs.createFileAbsolute(shim_path, .{ .truncate = true });
         defer file.close();
-        try file.writeAll(content);
+        try file.writeAll(yarn_shim_windows);
     } else {
-        // Unix: POSIX shell script with exec so nayr replaces the shell process.
         const shim_path = try std.fs.path.join(allocator, &.{ shim_dir, "yarn" });
         defer allocator.free(shim_path);
 
-        const content = try std.fmt.allocPrint(
-            allocator,
-            "#!/bin/sh\nexec \"{s}\" \"$@\"\n",
-            .{self_path},
-        );
-        defer allocator.free(content);
-
         const file = try std.fs.createFileAbsolute(shim_path, .{ .truncate = true });
         defer file.close();
-        try file.writeAll(content);
+        try file.writeAll(yarn_shim_unix);
         try file.chmod(0o755);
     }
-
-    return shim_dir;
 }

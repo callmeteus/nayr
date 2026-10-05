@@ -229,16 +229,16 @@ fn emitError(allocator: std.mem.Allocator, writer: output.Writer, hint: []const 
     const msg = if (hint.len > 0)
         try std.fmt.allocPrint(
             allocator,
-            "Your lockfile needs to be updated, but nayr was run with `--frozen-lockfile`.\n" ++
-                "Out of sync: {s}\n" ++
-                "Run `nayr install` locally to update the lockfile.",
+            "your lockfile needs to be updated, but nayr was run with `--frozen-lockfile`.\n" ++
+                "out of sync: {s}\n" ++
+                "run `nayr install` locally to update the lockfile.",
             .{hint},
         )
     else
         try std.fmt.allocPrint(
             allocator,
-            "Your lockfile needs to be updated, but nayr was run with `--frozen-lockfile`.\n" ++
-                "Run `nayr install` locally to update the lockfile.",
+            "your lockfile needs to be updated, but nayr was run with `--frozen-lockfile`.\n" ++
+                "run `nayr install` locally to update the lockfile.",
             .{},
         );
     defer allocator.free(msg);
