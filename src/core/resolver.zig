@@ -289,6 +289,7 @@ pub fn resolve(
             &resolved_set,
             &range_to_key,
         );
+        try applyWorkspaceOverrides(allocator, &resolved_set, &ws_res, &workspace_names);
     }
 
     if (use_preloaded_graph) {
@@ -979,6 +980,68 @@ fn enqueueMapDeps(
     }
 }
 
+/// Replaces registry-style lockfile preloads with workspace packages so monorepo
+/// members are symlinked instead of downloaded from npm.
+fn applyWorkspaceOverrides(
+    allocator: std.mem.Allocator,
+    resolved_set: *std.StringHashMapUnmanaged(ResolvedPackage),
+    ws_res: *const ws_resolver.WorkspaceResolver,
+    workspace_names: *const std.StringHashMapUnmanaged(void),
+) !void {
+    var keys = std.ArrayList([]const u8).init(allocator);
+    defer keys.deinit();
+
+    var it = resolved_set.keyIterator();
+    while (it.next()) |key| {
+        try keys.append(key.*);
+    }
+
+    for (keys.items) |key| {
+        const pkg_ptr = resolved_set.getPtr(key) orelse continue;
+        if (pkg_ptr.is_workspace) continue;
+        if (!workspace_names.contains(pkg_ptr.name)) continue;
+
+        const ws_pkg = ws_res.packages.get(pkg_ptr.name) orelse continue;
+
+        const saved_name = try allocator.dupe(u8, pkg_ptr.name);
+        const saved_deps = try copyStringMap(allocator, &pkg_ptr.dependencies);
+        const saved_opt_deps = try copyStringMap(allocator, &pkg_ptr.optional_dependencies);
+        freeResolvedPackage(allocator, pkg_ptr.*);
+
+        pkg_ptr.* = try resolvedFromWorkspaceOverride(
+            allocator,
+            saved_name,
+            ws_pkg,
+            saved_deps,
+            saved_opt_deps,
+        );
+        allocator.free(saved_name);
+    }
+}
+
+/// Builds a workspace `ResolvedPackage`, keeping dependency maps from a prior lockfile preload.
+fn resolvedFromWorkspaceOverride(
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    ws_pkg: *const ws_discovery.WorkspacePackage,
+    dependencies: std.StringHashMapUnmanaged([]const u8),
+    optional_dependencies: std.StringHashMapUnmanaged([]const u8),
+) !ResolvedPackage {
+    const version = ws_pkg.manifest.version orelse "0.0.0";
+
+    return ResolvedPackage{
+        .name = try allocator.dupe(u8, name),
+        .version = try allocator.dupe(u8, version),
+        .tarball_url = "",
+        .integrity = "",
+        .registry = "",
+        .is_workspace = true,
+        .is_git = false,
+        .dependencies = dependencies,
+        .optional_dependencies = optional_dependencies,
+    };
+}
+
 fn resolvedFromLockEntry(
     allocator: std.mem.Allocator,
     name: []const u8,
@@ -1458,6 +1521,7 @@ fn buildLockfile(
         // the original dep specifier (git URL, registry URL, etc.) and writes
         // a portable entry at that point.
         if (pkg.is_linked) continue;
+        if (pkg.is_workspace) continue;
         if (lockfile_types.isLocalFilesystemPath(pkg.tarball_url)) continue;
 
         // Build patterns list: start with the canonical "name@version" pattern,
