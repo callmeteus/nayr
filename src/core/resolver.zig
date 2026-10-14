@@ -375,24 +375,31 @@ pub fn resolve(
             // handled here with highest priority. Link-registry packages
             // (external dev checkouts) are checked immediately after.
             if (ws_res.resolve(req.name, effective_range)) |ws_pkg| {
-                const rp = ResolvedPackage{
-                    .name = try allocator.dupe(u8, req.name),
-                    .version = try allocator.dupe(u8, ws_pkg.manifest.version orelse "0.0.0"),
-                    .tarball_url = "",
-                    .integrity = "",
-                    .registry = "",
-                    .is_workspace = true,
-                    .is_git = false,
-                    .dependencies = .{},
-                    .optional_dependencies = .{},
-                };
-                const key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ rp.name, rp.version });
+                const ws_version = ws_pkg.manifest.version orelse "0.0.0";
+                const key = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ req.name, ws_version });
                 if (!resolved_set.contains(key)) {
+                    // Copy the workspace manifest's dependency ranges so the hoister's
+                    // Phase 4 conflict resolution can correctly nest a workspace
+                    // package's own deps under its node_modules when the root-elected
+                    // version does not satisfy the range (e.g. packages/cli declaring
+                    // axios@^1.15.2 while the root pins axios@^0.31.1). Without this,
+                    // workspace packages carried no dependency edges into the resolved
+                    // graph and the hoister silently fell back to whatever version
+                    // happened to be hoisted at root.
+                    const rp = ResolvedPackage{
+                        .name = try allocator.dupe(u8, req.name),
+                        .version = try allocator.dupe(u8, ws_version),
+                        .tarball_url = "",
+                        .integrity = "",
+                        .registry = "",
+                        .is_workspace = true,
+                        .is_git = false,
+                        .dependencies = try copyStringMap(allocator, &ws_pkg.manifest.dependencies),
+                        .optional_dependencies = try copyStringMap(allocator, &ws_pkg.manifest.optional_dependencies),
+                    };
                     try resolved_set.put(allocator, key, rp);
                 } else {
                     allocator.free(key);
-                    allocator.free(rp.name);
-                    allocator.free(rp.version);
                 }
                 continue;
             }
