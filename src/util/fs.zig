@@ -120,7 +120,7 @@ pub fn globMatch(pattern: []const u8, path: []const u8) bool {
 /// ## Parameters
 /// - `allocator`: Allocator for the result slice and each path string.
 /// - `base_dir`: The directory to search from.
-/// - `pattern`: Glob pattern (e.g. "packages/*").
+/// - `pattern`: Glob pattern (e.g. "packages/*", "./packages/*").
 ///
 /// ## Returns
 /// Slice of matching paths. Caller owns each string and the slice.
@@ -130,8 +130,21 @@ pub fn globExpand(allocator: std.mem.Allocator, base_dir: []const u8, pattern: [
     var dir = std.fs.openDirAbsolute(base_dir, .{ .iterate = true }) catch return results.toOwnedSlice();
     defer dir.close();
 
-    try walkGlob(allocator, &dir, base_dir, "", pattern, &results);
+    // Strip a leading "./" so patterns like "./packages/*" (as seen in some
+    // package.json `workspaces` fields, e.g. luckymaker's) match the same way
+    // as "packages/*". Without this, walkGlob compares the literal "./" prefix
+    // against real directory names and never matches anything, silently
+    // discovering zero workspaces.
+    const normalized_pattern = stripLeadingDotSlash(pattern);
+
+    try walkGlob(allocator, &dir, base_dir, "", normalized_pattern, &results);
     return results.toOwnedSlice();
+}
+
+/// Removes a leading "./" segment from a glob pattern, if present.
+fn stripLeadingDotSlash(pattern: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, pattern, "./")) return pattern[2..];
+    return pattern;
 }
 
 // ============================================================================
