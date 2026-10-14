@@ -5,6 +5,7 @@
 //! next invocation, nayr can skip the entire install pipeline in <500ms.
 
 const std = @import("std");
+const ws_discovery = @import("../workspace/discovery.zig");
 
 // ============================================================================
 // Public API
@@ -95,6 +96,12 @@ fn computeHash(allocator: std.mem.Allocator, root_dir: []const u8) ![]const u8 {
     defer allocator.free(root_pkg);
     hashFile(&hasher, root_pkg);
 
+    // Hash every workspace package.json too. Without this, editing a
+    // workspace manifest (e.g. adding a dependency to packages/cli/package.json
+    // in a monorepo) left the fast-path hash unchanged, so `nayr` reported
+    // "already up to date" and silently skipped resolving the new dependency.
+    try hashWorkspaceManifests(allocator, &hasher, root_dir);
+
     // Hash the sorted list of installed package names from node_modules.
     // This detects deleted packages without reading any file contents -
     // only directory entries (readdir) are accessed, which is very fast.
@@ -105,6 +112,51 @@ fn computeHash(allocator: std.mem.Allocator, root_dir: []const u8) ![]const u8 {
 
     // Encode as hex string.
     return std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(&digest)});
+}
+
+/// Hashes every discovered workspace package's `package.json` content, in a
+/// deterministic order (sorted by relative path) so the hash does not depend
+/// on filesystem iteration order.
+///
+/// ## Parameters
+/// - `allocator`: Scratch allocator.
+/// - `hasher`: The running SHA256 hasher to feed.
+/// - `root_dir`: Absolute path to the project root.
+fn hashWorkspaceManifests(
+    allocator: std.mem.Allocator,
+    hasher: *std.crypto.hash.sha2.Sha256,
+    root_dir: []const u8,
+) !void {
+    const workspaces = ws_discovery.discover(allocator, root_dir) catch return;
+    defer {
+        for (workspaces) |*ws| {
+            var m = ws.manifest;
+            m.deinit(allocator);
+            allocator.free(ws.path);
+            allocator.free(ws.rel_path);
+        }
+        allocator.free(workspaces);
+    }
+
+    if (workspaces.len == 0) return;
+
+    var rel_paths = try allocator.alloc([]const u8, workspaces.len);
+    defer allocator.free(rel_paths);
+    for (workspaces, 0..) |ws, i| rel_paths[i] = ws.rel_path;
+
+    std.mem.sort([]const u8, rel_paths, {}, struct {
+        fn lt(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lt);
+
+    for (rel_paths) |rel_path| {
+        const manifest_path = try std.fs.path.join(allocator, &.{ root_dir, rel_path, "package.json" });
+        defer allocator.free(manifest_path);
+        hasher.update(rel_path);
+        hasher.update("\n");
+        hashFile(hasher, manifest_path);
+    }
 }
 
 /// Iterates the top-level node_modules directory and feeds the sorted list of
