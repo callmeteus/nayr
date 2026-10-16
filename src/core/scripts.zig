@@ -616,7 +616,7 @@ fn refreshRuntimeNayrLink(allocator: std.mem.Allocator, nayr_home: []const u8) !
 
     if (is_windows) {
         // Hardlink or copy: symlinks to .exe often need elevated rights on Windows.
-        try std.fs.CopyFileOptions.copyFile(self_path, link_path, .{});
+        try std.fs.copyFileAbsolute(self_path, link_path, .{});
     } else {
         try std.fs.symLinkAbsolute(self_path, link_path, .{});
     }
