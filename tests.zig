@@ -15,4 +15,5 @@ comptime {
     _ = @import("tests/scripts_test.zig");
     _ = @import("tests/fs_test.zig");
     _ = @import("tests/integrity_test.zig");
+    _ = @import("tests/lifecycle_state_test.zig");
 }

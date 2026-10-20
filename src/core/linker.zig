@@ -21,6 +21,7 @@ const output = @import("../util/output.zig");
 const json_util = @import("../util/json.zig");
 const HoistedPackage = hoister.HoistedPackage;
 const Cache = cache_mod.Cache;
+const lifecycle_state = @import("lifecycle_state.zig");
 
 // ============================================================================
 // Public API
@@ -35,6 +36,8 @@ const Cache = cache_mod.Cache;
 /// - `cache`: Global cache for resolving package contents.
 /// - `workspace_paths`: Map of workspace package name → absolute path.
 /// - `writer`: Output event sink.
+/// - `lifecycle`: When set, unchanged packages skip re-copy from the global cache.
+/// - `force_relink`: When true, every registry package is copied again (`--force`).
 pub fn link(
     allocator: std.mem.Allocator,
     root_dir: []const u8,
@@ -42,6 +45,8 @@ pub fn link(
     cache: *Cache,
     workspace_paths: *const std.StringHashMapUnmanaged([]const u8),
     writer: output.Writer,
+    lifecycle: ?*lifecycle_state.State,
+    force_relink: bool,
 ) !void {
     const node_modules = try std.fs.path.join(allocator, &.{ root_dir, "node_modules" });
     defer allocator.free(node_modules);
@@ -98,7 +103,25 @@ pub fn link(
             try installGitPackage(allocator, hp.pkg.tarball_url, dest, hp.name, writer);
             try linkBinEntries(allocator, bin_dir, dest, hp.name, writer);
         } else {
-            // Registry package: copy from cache.
+            // Registry package: copy from cache unless lifecycle state says the
+            // on-disk tree already matches this version (postinstall artifacts intact).
+            const fingerprint = lifecycle_state.computeFingerprint(allocator, hp) catch null;
+            defer if (fingerprint) |fp| allocator.free(fp);
+
+            const skip_relink = if (lifecycle != null and fingerprint != null and !force_relink)
+                lifecycle.?.shouldSkipRelink(allocator, root_dir, hp.install_path, fingerprint.?)
+            else
+                false;
+
+            if (skip_relink) {
+                try linkBinEntries(allocator, bin_dir, dest, hp.name, writer);
+                writer.emit(.{ .link_progress = .{
+                    .linked = @intCast(i + 1),
+                    .total = @intCast(hoisted.len),
+                } });
+                continue;
+            }
+
             const cache_dir = cache.extractedDir(hp.pkg.registry, hp.name, hp.version) catch continue;
             defer allocator.free(cache_dir);
 

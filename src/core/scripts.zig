@@ -16,6 +16,7 @@ const output = @import("../util/output.zig");
 const IoTrace = @import("../util/io_trace.zig").IoTrace;
 const hoister = @import("hoister.zig");
 const HoistedPackage = hoister.HoistedPackage;
+const lifecycle_state = @import("lifecycle_state.zig");
 
 // ============================================================================
 // Public API
@@ -38,16 +39,26 @@ const HoistedPackage = hoister.HoistedPackage;
 ///   for git dependencies after their normal lifecycle scripts. This compiles
 ///   TypeScript packages that do not ship a pre-built `dist/`. Controlled by
 ///   `[git] build-deps = true` in `.nayrrc` or `NAYR_GIT_BUILD_DEPS=1`.
+/// - `lifecycle`: Per-package script cache; when set, unchanged packages are skipped.
+/// - `force_scripts`: When true, every package runs scripts (`--force`).
 /// - `writer`: Output event sink.
 pub fn runAll(
     allocator: std.mem.Allocator,
     root_dir: []const u8,
     hoisted: []const HoistedPackage,
     build_git_deps: bool,
+    lifecycle: ?*lifecycle_state.State,
+    force_scripts: bool,
     writer: output.Writer,
 ) !void {
     for (hoisted) |hp| {
         if (hp.pkg.is_workspace) continue; // workspace scripts are run by the user
+
+        if (lifecycle != null and !lifecycle.?.needsScripts(allocator, hp, force_scripts)) {
+            continue;
+        }
+
+        var scripts_failed = false;
 
         const pkg_dir = try std.fs.path.join(allocator, &.{ root_dir, hp.install_path });
         defer allocator.free(pkg_dir);
@@ -98,6 +109,9 @@ pub fn runAll(
 
                 defer freeScriptResult(allocator, result);
                 reportScriptRun(allocator, writer, hp.name, script_name, result);
+                if (result.exit_code != 0) {
+                    scripts_failed = true;
+                }
             }
         }
 
@@ -129,7 +143,16 @@ pub fn runAll(
                 };
                 defer freeScriptResult(allocator, result);
                 reportScriptRun(allocator, writer, hp.name, script_name, result);
+                if (result.exit_code != 0) {
+                    scripts_failed = true;
+                }
             }
+        }
+
+        if (lifecycle != null and !scripts_failed) {
+            const fingerprint = lifecycle_state.computeFingerprint(allocator, hp) catch continue;
+            defer allocator.free(fingerprint);
+            try lifecycle.?.markComplete(allocator, hp.install_path, fingerprint);
         }
     }
 }

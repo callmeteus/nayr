@@ -9,6 +9,7 @@ const fetcher_mod = @import("../core/fetcher.zig");
 const linker_mod = @import("../core/linker.zig");
 const scripts_mod = @import("../core/scripts.zig");
 const integrity_mod = @import("../core/integrity.zig");
+const lifecycle_state_mod = @import("../core/lifecycle_state.zig");
 const hoister_mod = @import("../core/hoister.zig");
 const frozen_lockfile_mod = @import("../core/frozen_lockfile.zig");
 const cache_mod = @import("../core/cache.zig");
@@ -284,6 +285,12 @@ pub fn run(
         }
     }
 
+    var lifecycle_state = try lifecycle_state_mod.State.load(allocator, cwd);
+    defer lifecycle_state.deinit(allocator);
+    if (opts.force) {
+        lifecycle_state.clear(allocator);
+    }
+
     // --- Phase 4: Link ---
     writer.emit(.{ .info = "linking packages..." });
     // With --skip-links, build a filtered slice that excludes nayr-linked and
@@ -299,13 +306,31 @@ pub fn run(
     } else hoisted;
     defer if (opts.skip_links) allocator.free(link_hoisted);
 
-    try linker_mod.link(allocator, cwd, link_hoisted, &cache, &ws_paths, writer);
+    try linker_mod.link(
+        allocator,
+        cwd,
+        link_hoisted,
+        &cache,
+        &ws_paths,
+        writer,
+        &lifecycle_state,
+        opts.force,
+    );
 
     // --- Phase 5: Scripts ---
     if (!opts.ignore_scripts and !config.ignore_scripts) {
         writer.emit(.{ .info = "running lifecycle scripts..." });
-        try scripts_mod.runAll(allocator, cwd, link_hoisted, config.git_build_deps, writer);
+        try scripts_mod.runAll(
+            allocator,
+            cwd,
+            link_hoisted,
+            config.git_build_deps,
+            &lifecycle_state,
+            opts.force,
+            writer,
+        );
         try scripts_mod.runRootPost(allocator, cwd, writer);
+        try lifecycle_state.save(allocator, cwd, link_hoisted);
     }
 
     // --- Phase 6: Write lockfile ---
