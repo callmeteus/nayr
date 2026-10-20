@@ -7,6 +7,7 @@
 //! work — the main cost on CI when only a few dependencies change.
 
 const std = @import("std");
+const fs_util = @import("../util/fs.zig");
 const hoister = @import("hoister.zig");
 const HoistedPackage = hoister.HoistedPackage;
 
@@ -101,10 +102,7 @@ pub const State = struct {
 
         const nm_path = try std.fs.path.join(allocator, &.{ root_dir, "node_modules" });
         defer allocator.free(nm_path);
-        try std.fs.createDirAbsolute(nm_path) catch |err| switch (err) {
-            error.PathAlreadyExists => {},
-            else => return err,
-        };
+        try fs_util.mkdirAllRecursive(allocator, nm_path);
 
         const path = try std.fs.path.join(allocator, &.{ nm_path, state_file_name });
         defer allocator.free(path);
