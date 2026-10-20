@@ -65,7 +65,7 @@ pub fn runAll(
 
         for (lifecycle_scripts) |script_name| {
             if (manifest.scripts.get(script_name)) |script_cmd| {
-                const result = runScript(allocator, script_cmd, pkg_dir, augmented_path, writer.isVerbose()) catch |err| {
+                var result = runScript(allocator, script_cmd, pkg_dir, augmented_path, writer.isVerbose()) catch |err| {
                     const emsg = std.fmt.allocPrint(
                         allocator,
                         "script {s} [{s}] failed: {s}",
@@ -77,6 +77,25 @@ pub fn runAll(
                     writer.emit(.{ .warning = emsg });
                     continue;
                 };
+
+                // Native install scripts (node-gyp) can fail intermittently on parallel make;
+                // one silent retry matches what many developers do manually after a flake.
+                if (result.exit_code != 0 and std.mem.eql(u8, script_name, "install")) {
+                    freeScriptResult(allocator, result);
+                    result = runScript(allocator, script_cmd, pkg_dir, augmented_path, writer.isVerbose()) catch |err| {
+                        const emsg = std.fmt.allocPrint(
+                            allocator,
+                            "script {s} [{s}] failed on retry: {s}",
+                            .{ script_name, hp.name, @errorName(err) },
+                        ) catch {
+                            continue;
+                        };
+                        defer allocator.free(emsg);
+                        writer.emit(.{ .warning = emsg });
+                        continue;
+                    };
+                }
+
                 defer freeScriptResult(allocator, result);
                 reportScriptRun(allocator, writer, hp.name, script_name, result);
             }
@@ -295,6 +314,36 @@ const ScriptResult = struct {
 
 const script_output_cap: usize = 512 * 1024;
 
+const PipeReadResult = struct {
+    bytes: []const u8,
+    read_err: ?anyerror,
+};
+
+const PipeReadCtx = struct {
+    pipe: std.fs.File,
+    allocator: std.mem.Allocator,
+    cap: usize,
+    out: *PipeReadResult,
+};
+
+/// Drains a child pipe on a worker thread (used to avoid stdout/stderr pipe deadlock).
+fn readChildPipeWorker(ctx: *PipeReadCtx) void {
+    ctx.out.bytes = ctx.pipe.reader().readAllAlloc(ctx.allocator, ctx.cap) catch |err| {
+        ctx.out.read_err = err;
+        ctx.out.bytes = "";
+        return;
+    };
+    ctx.out.read_err = null;
+}
+
+/// Forces serial `make` for node-gyp during lifecycle scripts.
+///
+/// node-gyp forwards `JOBS` to `make -j`. Parallel make can race while creating
+/// deep `.deps` paths (better-sqlite3 `sqlite3.o.d.raw` ENOENT).
+fn applyLifecycleBuildEnv(env_map: *std.process.EnvMap) !void {
+    try env_map.put("JOBS", "1");
+}
+
 fn freeScriptResult(allocator: std.mem.Allocator, result: ScriptResult) void {
     if (result.stdout.len > 0) allocator.free(result.stdout);
     if (result.stderr.len > 0) allocator.free(result.stderr);
@@ -354,6 +403,7 @@ fn runScript(
     var env_map = try std.process.getEnvMap(allocator);
     defer env_map.deinit();
     if (path_override) |p| try env_map.put("PATH", p);
+    try applyLifecycleBuildEnv(&env_map);
     if (!verbose) {
         try env_map.put("npm_config_loglevel", "silent");
         try env_map.put("npm_config_progress", "false");
@@ -377,10 +427,39 @@ fn runScript(
         return err;
     };
 
-    const stdout = try child.stdout.?.reader().readAllAlloc(allocator, script_output_cap);
-    errdefer allocator.free(stdout);
-    const stderr = try child.stderr.?.reader().readAllAlloc(allocator, script_output_cap);
-    errdefer allocator.free(stderr);
+    var stdout_result: PipeReadResult = .{ .bytes = "", .read_err = null };
+    var stderr_result: PipeReadResult = .{ .bytes = "", .read_err = null };
+
+    var stdout_ctx = PipeReadCtx{
+        .pipe = child.stdout.?,
+        .allocator = allocator,
+        .cap = script_output_cap,
+        .out = &stdout_result,
+    };
+    var stderr_ctx = PipeReadCtx{
+        .pipe = child.stderr.?,
+        .allocator = allocator,
+        .cap = script_output_cap,
+        .out = &stderr_result,
+    };
+
+    const stdout_thread = std.Thread.spawn(.{}, readChildPipeWorker, .{&stdout_ctx}) catch |err| {
+        _ = child.wait() catch {};
+        return err;
+    };
+    const stderr_thread = std.Thread.spawn(.{}, readChildPipeWorker, .{&stderr_ctx}) catch |err| {
+        stdout_thread.join();
+        _ = child.wait() catch {};
+        return err;
+    };
+
+    stdout_thread.join();
+    stderr_thread.join();
+
+    const stdout = stdout_result.bytes;
+    const stderr = stderr_result.bytes;
+    errdefer if (stdout.len > 0) allocator.free(stdout);
+    errdefer if (stderr.len > 0) allocator.free(stderr);
 
     const term = try child.wait();
     const exit_code: u8 = switch (term) {
