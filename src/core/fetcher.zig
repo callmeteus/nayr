@@ -63,7 +63,8 @@ pub fn fetchAll(
 
     var it = packages.valueIterator();
     while (it.next()) |pkg| {
-        if (pkg.is_workspace or pkg.is_git or pkg.tarball_url.len == 0) continue;
+        if (pkg.is_workspace or pkg.is_git or pkg.version.len == 0) continue;
+        if (pkg.tarball_url.len == 0) continue;
         const in_cache = try cache.has(pkg.registry, pkg.name, pkg.version);
         if (!in_cache) {
             try pending.append(pkg);

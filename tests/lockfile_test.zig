@@ -156,3 +156,29 @@ test "lockfile semanticEqual: version mismatch" {
 
     try std.testing.expect(!lockfile_types.Lockfile.semanticEqual(&lock_a, &lock_b));
 }
+
+test "LockfileEntry.isUsable: rejects empty version and package-.tgz URLs" {
+    const good = lockfile_types.LockfileEntry{
+        .patterns = &.{},
+        .version = "1.3.0",
+        .resolved = "https://registry.npmjs.org/get-intrinsic/-/get-intrinsic-1.3.0.tgz",
+        .integrity = "",
+    };
+    try std.testing.expect(good.isUsable());
+
+    const empty_version = lockfile_types.LockfileEntry{
+        .patterns = &.{},
+        .version = "",
+        .resolved = "https://registry.npmjs.org/get-intrinsic/-/get-intrinsic-.tgz",
+        .integrity = "",
+    };
+    try std.testing.expect(!empty_version.isUsable());
+
+    const broken_url = lockfile_types.LockfileEntry{
+        .patterns = &.{},
+        .version = "1.3.0",
+        .resolved = "https://registry.npmjs.org/foo/-/foo-.tgz",
+        .integrity = "",
+    };
+    try std.testing.expect(!broken_url.isUsable());
+}

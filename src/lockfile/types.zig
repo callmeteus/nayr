@@ -65,6 +65,27 @@ pub const LockfileEntry = struct {
         }
         self.optional_dependencies.deinit(allocator);
     }
+
+    /// Returns true when the entry has a pinned version and can be downloaded or
+    /// written back to the lockfile.
+    ///
+    /// Corrupted lockfile rows (empty `version:` / `package-.tgz` URLs) must be
+    /// ignored so resolution re-fetches from the registry instead of poisoning
+    /// `resolved_set` and every dependent range pattern.
+    ///
+    /// ## Returns
+    /// `true` when the entry is safe to preload, index, or emit.
+    pub fn isUsable(self: *const LockfileEntry) bool {
+        if (self.version.len == 0) {
+            return false;
+        }
+
+        if (self.resolved.len > 0 and std.mem.endsWith(u8, self.resolved, "-.tgz")) {
+            return false;
+        }
+
+        return true;
+    }
 };
 
 // ============================================================================
